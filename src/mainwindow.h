@@ -26,6 +26,7 @@
 #include <QDir>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
 #include <QProgressDialog>
 #include <QSettings>
 #include <QTimer>
@@ -108,4 +109,5 @@ private:
     void setIconIfNull(QPushButton *button, const QString &themeIcon, const QString &fallbackIcon);
     void setProgressBar();
     void setSelected();
+    static void setupNetworkProxy(QNetworkAccessManager &manager, const QUrl &url);
 };

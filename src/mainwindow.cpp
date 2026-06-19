@@ -1120,6 +1120,15 @@ bool MainWindow::isValidRepositoryUrl(const QString &url)
     return true;
 }
 
+void MainWindow::setupNetworkProxy(QNetworkAccessManager &manager, const QUrl &url)
+{
+    QNetworkProxyQuery query {url};
+    QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(query);
+    if (!proxies.isEmpty()) {
+        manager.setProxy(proxies.first());
+    }
+}
+
 bool MainWindow::checkRepo(const QString &repo)
 {
     QNetworkRequest request;
@@ -1128,12 +1137,8 @@ bool MainWindow::checkRepo(const QString &repo)
         "User-Agent",
         QString("%1/%2 (linux-gnu)").arg(QApplication::applicationName(), QApplication::applicationVersion()).toUtf8());
 
-    QNetworkProxyQuery query {QUrl(repo)};
-    QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(query);
     QNetworkAccessManager manager;
-    if (!proxies.isEmpty()) {
-        manager.setProxy(proxies.first());
-    }
+    setupNetworkProxy(manager, QUrl(repo));
 
     request.setUrl(QUrl(repo));
     QNetworkReply *reply = manager.head(request);
@@ -1159,12 +1164,8 @@ bool MainWindow::downloadFile(const QString &url, QFile *file, std::chrono::seco
         return false;
     }
 
-    QNetworkProxyQuery query {QUrl(url)};
-    QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(query);
     QNetworkAccessManager manager;
-    if (!proxies.isEmpty()) {
-        manager.setProxy(proxies.first());
-    }
+    setupNetworkProxy(manager, QUrl(url));
 
     QNetworkRequest request {QUrl(url)};
     request.setRawHeader(
