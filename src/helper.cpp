@@ -25,6 +25,12 @@
 
 namespace
 {
+// Safety net against a genuinely hung privileged process. waitForFinished() returns as soon as
+// the process exits, so this only bounds a stuck process; legitimate long operations such as
+// netselect/netselect-apt mirror testing and apt-get update should finish well within it. Normal
+// user-initiated interruption is handled GUI-side via MainWindow::cancelOperation().
+constexpr int kProcessTimeoutMs = 300000; // 5 minutes
+
 struct ProcessResult
 {
     bool started = false;
@@ -101,7 +107,19 @@ void printError(const QString &message)
         process.write(input);
     }
     process.closeWriteChannel();
-    process.waitForFinished(120000);
+    if (!process.waitForFinished(kProcessTimeoutMs)) {
+        process.kill();
+        process.waitForFinished(2000);
+        result.standardOutput = process.readAllStandardOutput();
+        result.standardError = process.readAllStandardError()
+            + QString("\nCommand timed out after %1 seconds and was killed: %2\n")
+                  .arg(kProcessTimeoutMs / 1000)
+                  .arg(program)
+                  .toUtf8();
+        result.exitStatus = QProcess::CrashExit;
+        result.exitCode = 124; // conventional timeout exit code
+        return result;
+    }
 
     result.exitStatus = process.exitStatus();
     result.exitCode = process.exitCode();
