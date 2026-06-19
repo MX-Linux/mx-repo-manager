@@ -581,7 +581,7 @@ void MainWindow::procDone()
     bar->setValue(bar->maximum());
     timer.stop();
     timer.disconnect();
-    QApplication::setOverrideCursor(QCursor(Qt::ArrowCursor));
+    QApplication::restoreOverrideCursor();
 }
 
 bool MainWindow::replaceRepos(const QString &url, bool quiet)

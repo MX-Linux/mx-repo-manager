@@ -101,7 +101,7 @@ void printError(const QString &message)
         process.write(input);
     }
     process.closeWriteChannel();
-    process.waitForFinished(-1);
+    process.waitForFinished(120000);
 
     result.exitStatus = process.exitStatus();
     result.exitCode = process.exitCode();
