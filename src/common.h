@@ -20,5 +20,3 @@
  * along with this package. If not, see <http://www.gnu.org/licenses/>.
  **********************************************************************/
 #pragma once
-
-inline const QString starting_home {qEnvironmentVariable("HOME")};

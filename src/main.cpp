@@ -28,7 +28,6 @@
 #include <QLocale>
 #include <QTranslator>
 
-#include "common.h"
 #include "mainwindow.h"
 #include <unistd.h>
 
