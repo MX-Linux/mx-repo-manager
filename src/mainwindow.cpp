@@ -1023,13 +1023,13 @@ void MainWindow::pushRestoreSources_clicked()
         return;
     }
 
-    const QString aptUrisOut = shell->getOut("apt-get update --print-uris", QuietMode::Yes);
+    const QString aptUrisOut = shell->getOut("apt-get", {"update", "--print-uris"}, QuietMode::Yes);
     static const QRegularExpression ahsRx(QStringLiteral("/mx/([.]?/)*repo/.*/ahs/binary-amd64/Packages"));
     static const QRegularExpression mxRx(QStringLiteral("/mx/([.]?/)*repo/.*/main/binary-amd64/Packages"));
 
     bool enable_ahs = false;
     // For newer versions and 64-bit OS check if AHS was enabled
-    if (mx_version >= 19 && shell->getOut("uname -m", QuietMode::Yes).trimmed() == "x86_64") {
+    if (mx_version >= 19 && shell->getOut("uname", {"-m"}, QuietMode::Yes).trimmed() == "x86_64") {
         if (ahsRx.match(aptUrisOut).hasMatch()) {
             enable_ahs = true;
             qDebug() << "AHS repo detected:" << enable_ahs;
@@ -1060,7 +1060,7 @@ void MainWindow::pushRestoreSources_clicked()
 
     if (enable_ahs) {
         enableAHS(file);
-    } else if (mx_version >= 19 && shell->getOut("uname -m", QuietMode::Yes).trimmed() == "x86_64" && !enable_mx) {
+    } else if (mx_version >= 19 && shell->getOut("uname", {"-m"}, QuietMode::Yes).trimmed() == "x86_64" && !enable_mx) {
         if (QMessageBox::Yes
             == QMessageBox::question(this, tr("Enabling AHS"), tr("Do you use AHS (Advanced Hardware Stack) repo?"))) {
             enableAHS(file);

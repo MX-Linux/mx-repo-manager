@@ -6,7 +6,6 @@
 #include <QFile>
 #include <QMessageBox>
 
-#include "mainwindow.h"
 #include <unistd.h>
 
 Cmd::Cmd(QObject *parent)
@@ -45,6 +44,13 @@ QString Cmd::getOut(const QString &cmd, QuietMode quiet)
 {
     QString output;
     run(cmd, &output, nullptr, quiet);
+    return output;
+}
+
+QString Cmd::getOut(const QString &program, const QStringList &args, QuietMode quiet)
+{
+    QString output;
+    proc(program, args, &output, nullptr, quiet);
     return output;
 }
 
@@ -163,15 +169,15 @@ bool Cmd::run(const QString &cmd, QString *output, const QByteArray *input, Quie
 
 void Cmd::handleElevationError(int helperExitCode)
 {
-    if (qobject_cast<MainWindow *>(qApp->activeWindow())) {
-        if (helperExitCode == EXIT_CODE_PERMISSION_DENIED) {
-            QMessageBox::warning(nullptr, tr("Authentication Canceled"),
-                                 tr("Authentication was canceled. No changes were applied."));
-        } else {
-            QMessageBox::critical(nullptr, tr("Administrator Access Required"),
-                                  tr("This operation requires administrator privileges, but the helper could not be "
-                                     "started correctly. No changes were applied."));
-        }
+    if (!qApp->activeWindow())
+        return;
+    if (helperExitCode == EXIT_CODE_PERMISSION_DENIED) {
+        QMessageBox::warning(nullptr, tr("Authentication Canceled"),
+                             tr("Authentication was canceled. No changes were applied."));
+    } else {
+        QMessageBox::critical(nullptr, tr("Administrator Access Required"),
+                              tr("This operation requires administrator privileges, but the helper could not be "
+                                 "started correctly. No changes were applied."));
     }
 }
 
