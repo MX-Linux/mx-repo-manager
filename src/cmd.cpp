@@ -19,7 +19,7 @@ Cmd::Cmd(QObject *parent)
         }
     }
 
-    helper = QString("/usr/lib/%1/helper").arg(QApplication::applicationName());
+    helper = QStringLiteral(HELPER_PATH);
 
     connect(this, &Cmd::readyReadStandardOutput, this, &Cmd::handleStandardOutput);
     connect(this, &Cmd::readyReadStandardError, this, &Cmd::handleStandardError);
