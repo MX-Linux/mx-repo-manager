@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # **********************************************************************
-# * Copyright (C) 2016-2025 MX Authors
+# * Copyright (C) 2016-2026 MX Authors
 # *
 # * Authors: Adrian
 # *          MX Linux <http://mxlinux.org>
