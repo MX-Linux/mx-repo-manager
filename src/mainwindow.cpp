@@ -610,81 +610,65 @@ bool MainWindow::replaceRepos(const QString &url, bool quiet)
     const QString trimmedUrl = url.trimmed().remove(QRegularExpression("/$"));
     const QString mx_list {"/etc/apt/sources.list.d/mx.list"};
     const QString mx_sources {"/etc/apt/sources.list.d/mx.sources"};
+    // MX installs ship exactly one of these two formats, never both -- same assumption
+    // pushRestoreSources_clicked() makes.
+    const QString targetPath = QFile::exists(mx_list) ? mx_list : mx_sources;
+    const bool useSourcesFormat = targetPath == mx_sources;
 
-    auto updateListFile = [&](const QString &path) -> bool {
-        QFile file(path);
-        if (!file.exists()) {
-            return false;
+    const auto fail = [&]() -> bool {
+        if (!quiet) {
+            QMessageBox::critical(this, tr("Error"), tr("Could not change the repo."));
         }
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            qWarning() << "Could not open file:" << path << file.errorString();
-            return false;
-        }
-        QTextStream in(&file);
-        QString content = in.readAll();
-        file.close();
-
-        QString updated = content;
-        QRegularExpression repoPattern(
-            R"((deb(?:-src)?\s+(?:\[.*?\]\s+)?)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
-            QRegularExpression::CaseInsensitiveOption);
-        updated.replace(repoPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
-        updated.replace(QRegularExpression(R"([\t ]{2,})"), " ");
-        updated.replace(QRegularExpression(R"([\t ]+$)", QRegularExpression::MultilineOption), "");
-
-        if (updated == content) {
-            return false;
-        }
-        return writeUpdatedFile(path, updated);
+        return false;
     };
 
-    auto updateSourcesFile = [&](const QString &path) -> bool {
-        QFile file(path);
-        if (!file.exists()) {
-            return false;
-        }
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            qWarning() << "Could not open file:" << path << file.errorString();
-            return false;
-        }
-        QTextStream in(&file);
-        QString content = in.readAll();
-        file.close();
+    QFile file(targetPath);
+    if (!file.exists()) {
+        qWarning() << "No MX repo source file found at" << targetPath;
+        return fail();
+    }
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "Could not open file:" << targetPath << file.errorString();
+        return fail();
+    }
+    QTextStream in(&file);
+    QString content = in.readAll();
+    file.close();
 
-        QString updated = content;
+    QString updated = content;
+    if (useSourcesFormat) {
         QRegularExpression uriPattern(
             R"((URIs:\s*)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
             QRegularExpression::CaseInsensitiveOption);
         updated.replace(uriPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
-        updated.replace(QRegularExpression(R"([\t ]{2,})"), " ");
-        updated.replace(QRegularExpression(R"([\t ]+$)", QRegularExpression::MultilineOption), "");
-
-        if (updated == content) {
-            return false;
-        }
-        return writeUpdatedFile(path, updated);
-    };
-
-    bool result = updateListFile(mx_list);
-    if (!result) {
-        result = updateSourcesFile(mx_sources);
-    }
-
-    if (result) {
-        sources_changed = true;
-    }
-
-    if (quiet) {
-        return result;
     } else {
-        if (result) {
-            QMessageBox::information(this, tr("Success"),
-                                     tr("Your new selection will take effect the next time sources are updated."));
-        } else {
-            QMessageBox::critical(this, tr("Error"), tr("Could not change the repo."));
-        }
-        return result;
+        QRegularExpression repoPattern(
+            R"((deb(?:-src)?\s+(?:\[.*?\]\s+)?)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
+            QRegularExpression::CaseInsensitiveOption);
+        updated.replace(repoPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
     }
+    updated.replace(QRegularExpression(R"([\t ]{2,})"), " ");
+    updated.replace(QRegularExpression(R"([\t ]+$)", QRegularExpression::MultilineOption), "");
+
+    if (updated == content) {
+        // Already pointing at this mirror -- not a failure, so don't show "Could not change".
+        if (!quiet) {
+            QMessageBox::information(this, tr("No Changes"),
+                                     tr("The selected repository is already configured."));
+        }
+        return true;
+    }
+
+    if (!writeUpdatedFile(targetPath, updated)) {
+        return fail();
+    }
+
+    sources_changed = true;
+    if (!quiet) {
+        QMessageBox::information(this, tr("Success"),
+                                 tr("Your new selection will take effect the next time sources are updated."));
+    }
+    return true;
 }
 
 void MainWindow::setConnections()
