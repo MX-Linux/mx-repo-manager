@@ -16,10 +16,12 @@
  **********************************************************************/
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QProcess>
+#include <QRegularExpression>
 
 #include <cstdio>
 
@@ -77,6 +79,142 @@ void printError(const QString &message)
         {"true", {"/usr/bin/true", "/bin/true"}},
     };
     return commands;
+}
+
+[[nodiscard]] bool isCleanAbsolutePath(const QString &path)
+{
+    return path.startsWith(QLatin1Char('/')) && QDir::cleanPath(path) == path;
+}
+
+// The fixed set of APT source files this app manages, plus any *.list/*.sources file living
+// directly inside sources.list.d (mirrors what the GUI enumerates) -- never in a subdirectory.
+[[nodiscard]] bool isManagedSourceFile(const QString &path)
+{
+    static const QStringList fixedFiles {
+        "/etc/apt/sources.list",
+        "/etc/apt/sources.list.d/debian.list",
+        "/etc/apt/sources.list.d/debian.sources",
+        "/etc/apt/sources.list.d/debian-stable-updates.list",
+        "/etc/apt/sources.list.d/debian-stable-updates.sources",
+    };
+    static const QString sourcesListDir = QStringLiteral("/etc/apt/sources.list.d/");
+
+    if (!isCleanAbsolutePath(path)) {
+        return false;
+    }
+    if (fixedFiles.contains(path)) {
+        return true;
+    }
+    if (!path.startsWith(sourcesListDir)) {
+        return false;
+    }
+    const QString rest = path.mid(sourcesListDir.size());
+    return !rest.isEmpty() && !rest.contains(QLatin1Char('/'))
+        && (rest.endsWith(".list") || rest.endsWith(".sources"));
+}
+
+// A per-file backup living directly inside sources.list.d/backups.
+[[nodiscard]] bool isBackupFile(const QString &path)
+{
+    static const QString backupDir = QStringLiteral("/etc/apt/sources.list.d/backups/");
+
+    if (!isCleanAbsolutePath(path) || !path.startsWith(backupDir)) {
+        return false;
+    }
+    const QString rest = path.mid(backupDir.size());
+    return !rest.isEmpty() && !rest.contains(QLatin1Char('/'));
+}
+
+// A QTemporaryFile the GUI created directly under the system temp directory.
+[[nodiscard]] bool isTempFile(const QString &path)
+{
+    const QString tempDir = QDir::tempPath() + QLatin1Char('/');
+
+    if (!isCleanAbsolutePath(path) || !path.startsWith(tempDir)) {
+        return false;
+    }
+    const QString rest = path.mid(tempDir.size());
+    return !rest.isEmpty() && !rest.contains(QLatin1Char('/'));
+}
+
+// A *.list/*.sources file extracted from a package into a QTemporaryDir before being restored.
+[[nodiscard]] bool isRestoreSourceFile(const QString &path)
+{
+    const QString tempDir = QDir::tempPath() + QLatin1Char('/');
+
+    return isCleanAbsolutePath(path) && path.startsWith(tempDir)
+        && (path.endsWith(".list") || path.endsWith(".sources"));
+}
+
+// Validate that the requested arguments match one of the specific operations this app ever
+// performs, so an authenticated pkexec session cannot be reused to run e.g.
+// "chmod 4755 /bin/bash" or "cp <anything> <anywhere>" -- only the program name was checked before.
+[[nodiscard]] bool validateArgs(const QString &command, const QStringList &args)
+{
+    if (command == "apt-get") {
+        return args == QStringList {"update"};
+    }
+    if (command == "true") {
+        return args.isEmpty();
+    }
+    if (command == "mkdir") {
+        return args == QStringList {"-p", QStringLiteral("/etc/apt/sources.list.d/backups")};
+    }
+    if (command == "chmod") {
+        return args.size() == 2 && args.at(0) == "644" && isManagedSourceFile(args.at(1));
+    }
+    if (command == "chown") {
+        return args.size() == 2 && (args.at(0) == "root:" || args.at(0) == "0:0") && isManagedSourceFile(args.at(1));
+    }
+    if (command == "cp") {
+        if (args.size() != 2) {
+            return false;
+        }
+        const QString &src = args.at(0);
+        const QString &dst = args.at(1);
+        return (isManagedSourceFile(src) && isBackupFile(dst)) || (isBackupFile(src) && isManagedSourceFile(dst));
+    }
+    if (command == "mv") {
+        QStringList positional = args;
+        QString flag;
+        if (!positional.isEmpty() && positional.constFirst().startsWith(QLatin1Char('-'))) {
+            flag = positional.takeFirst();
+        }
+        if (positional.size() != 2 || !(flag.isEmpty() || flag == "-f" || flag == "-b")) {
+            return false;
+        }
+        const QString &src = positional.at(0);
+        const QString &dst = positional.at(1);
+        return (isTempFile(src) || isRestoreSourceFile(src)) && isManagedSourceFile(dst);
+    }
+    if (command == "kill") {
+        QStringList positional = args;
+        if (!positional.isEmpty() && positional.constFirst() == "-9") {
+            positional.removeFirst();
+        }
+        if (positional.size() != 1) {
+            return false;
+        }
+        bool ok = false;
+        const qint64 pid = positional.constFirst().toLongLong(&ok);
+        return ok && pid > 0;
+    }
+    if (command == "netselect-apt") {
+        if (args.size() < 2 || args.size() > 3 || args.at(args.size() - 2) != "-o") {
+            return false;
+        }
+        if (args.size() == 3) {
+            static const QRegularExpression releaseName("^[A-Za-z0-9._-]+$");
+            if (!releaseName.match(args.constFirst()).hasMatch()) {
+                return false;
+            }
+        }
+        return isTempFile(args.constLast());
+    }
+    if (command == "netselect") {
+        return args.size() >= 2 && args.at(0) == "-D" && args.at(1) == "-I";
+    }
+    return false;
 }
 
 [[nodiscard]] QString resolveBinary(const QStringList &candidates)
@@ -143,6 +281,11 @@ void printError(const QString &message)
     const auto commandIt = allowedCommands().constFind(command);
     if (commandIt == allowedCommands().constEnd()) {
         printError(QString("Command is not allowed: %1").arg(command));
+        return 127;
+    }
+
+    if (!validateArgs(command, args)) {
+        printError(QString("Arguments not allowed for command: %1").arg(command));
         return 127;
     }
 
