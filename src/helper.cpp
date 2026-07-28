@@ -77,6 +77,7 @@ void printError(const QString &message)
         {"mkdir", {"/usr/bin/mkdir", "/bin/mkdir"}},
         {"netselect", {"/usr/bin/netselect"}},
         {"netselect-apt", {"/usr/bin/netselect-apt"}},
+        {"rm", {"/usr/bin/rm", "/bin/rm"}},
         {"true", {"/usr/bin/true", "/bin/true"}},
     };
     return commands;
@@ -256,6 +257,10 @@ void removePidFileIfMatches(qint64 pid)
     if (command == "netselect") {
         return args.size() >= 2 && args.at(0) == "-D" && args.at(1) == "-I";
     }
+    if (command == "rm") {
+        // Only ever used to undo a just-created restore file on rollback -- never an arbitrary path.
+        return args.size() == 2 && args.at(0) == "-f" && isManagedSourceFile(args.at(1));
+    }
     return false;
 }
 
@@ -399,14 +404,28 @@ void removePidFileIfMatches(qint64 pid)
 // over our own stdin (which nothing but our direct parent process can feed).
 [[nodiscard]] int handleInstall(const QStringList &args, const QByteArray &content)
 {
-    if (args.size() != 1) {
+    QStringList positional = args;
+    const bool allowCreate = !positional.isEmpty() && positional.constFirst() == QLatin1String("--allow-create");
+    if (allowCreate) {
+        positional.removeFirst();
+    }
+
+    if (positional.size() != 1) {
         printError(QStringLiteral("install requires exactly one target path"));
         return 1;
     }
 
-    const QString &targetPath = args.constFirst();
+    const QString &targetPath = positional.constFirst();
     if (!isManagedSourceFile(targetPath)) {
         printError(QString("Refusing to install to disallowed path: %1").arg(targetPath));
+        return 1;
+    }
+    // Every legitimate caller except the restore flow (which may recreate a file the user
+    // deleted) only ever replaces a file that already exists; without this, any *.list/*.sources
+    // name under sources.list.d would be accepted, letting a caller plant a brand-new,
+    // attacker-controlled APT source file that was never one of the app's known files.
+    if (!allowCreate && !QFileInfo::exists(targetPath)) {
+        printError(QString("Refusing to create new file: %1").arg(targetPath));
         return 1;
     }
 

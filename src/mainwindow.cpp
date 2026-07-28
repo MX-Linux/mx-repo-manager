@@ -1083,6 +1083,9 @@ void MainWindow::pushRestoreSources_clicked()
     }
 
     bool restoreSuccess = !restoredFiles.isEmpty();
+    QStringList installedTargets;
+    QHash<QString, QString> targetBackups; // only present for targets that existed before this restore
+
     for (const QFileInfo &sourceInfo : restoredFiles) {
         const QString targetPath = QString("/etc/apt/sources.list.d/%1").arg(sourceInfo.fileName());
 
@@ -1094,6 +1097,7 @@ void MainWindow::pushRestoreSources_clicked()
                 restoreSuccess = false;
                 break;
             }
+            targetBackups.insert(targetPath, backupFilePath);
         }
 
         QFile sourceFile(sourceInfo.absoluteFilePath());
@@ -1105,9 +1109,24 @@ void MainWindow::pushRestoreSources_clicked()
         const QByteArray content = sourceFile.readAll();
         sourceFile.close();
 
-        restoreSuccess = shell->installAsRoot(targetPath, content);
+        restoreSuccess = shell->installAsRoot(targetPath, content, true);
         if (!restoreSuccess) {
             break;
+        }
+        installedTargets << targetPath;
+    }
+
+    if (!restoreSuccess && !installedTargets.isEmpty()) {
+        qWarning() << "Rolling back" << installedTargets.size() << "restored file(s) after failure";
+        for (const QString &targetPath : std::as_const(installedTargets)) {
+            const auto backupIt = targetBackups.constFind(targetPath);
+            if (backupIt != targetBackups.constEnd()) {
+                if (!Cmd().procAsRoot("cp", {backupIt.value(), targetPath})) {
+                    qWarning() << "Failed to roll back" << targetPath;
+                }
+            } else if (!Cmd().procAsRoot("rm", {"-f", targetPath})) {
+                qWarning() << "Failed to remove newly-restored file during rollback:" << targetPath;
+            }
         }
     }
 
