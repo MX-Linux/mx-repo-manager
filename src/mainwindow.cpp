@@ -945,8 +945,6 @@ void MainWindow::pushFastestDebian_clicked()
             break;
         }
     }
-    blockSignals(false);
-
     if (checkRepo(repo)) {
         replaceDebianRepos(repo);
         refresh();
