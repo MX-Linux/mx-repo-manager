@@ -647,39 +647,48 @@ bool MainWindow::replaceRepos(const QString &url, bool quiet)
         return writeUpdatedFile(path, updated) ? UpdateOutcome::Changed : UpdateOutcome::Failed;
     };
 
-    // mx.list is the expected/preferred format, but don't assume mx.sources can't also exist
-    // (e.g. a stale leftover from a format migration, or vice versa): if the preferred file
-    // didn't need a change, still check the other one so a genuinely-active file in that format
-    // isn't left unmodified.
-    UpdateOutcome outcome = tryUpdate(mx_list, false);
-    if (outcome != UpdateOutcome::Changed) {
-        const UpdateOutcome sourcesOutcome = tryUpdate(mx_sources, true);
-        if (sourcesOutcome != UpdateOutcome::NotApplicable) {
-            outcome = sourcesOutcome;
-        }
+    // Both formats are examined independently and unconditionally -- nothing enforces that MX
+    // installs ship only one of these, so either file could be the genuinely active repo
+    // declaration, or both could be (e.g. around a format migration). Checking mx.sources only
+    // when mx.list didn't change would leave a real, independently-active mx.sources untouched
+    // whenever mx.list also happened to need (and successfully receive) an update.
+    const UpdateOutcome listOutcome = tryUpdate(mx_list, false);
+    const UpdateOutcome sourcesOutcome = tryUpdate(mx_sources, true);
+
+    const bool anyChanged = listOutcome == UpdateOutcome::Changed || sourcesOutcome == UpdateOutcome::Changed;
+    const bool anyFailed = listOutcome == UpdateOutcome::Failed || sourcesOutcome == UpdateOutcome::Failed;
+    const bool anyExists = listOutcome != UpdateOutcome::NotApplicable
+        || sourcesOutcome != UpdateOutcome::NotApplicable;
+
+    if (anyChanged) {
+        sources_changed = true;
     }
 
-    switch (outcome) {
-    case UpdateOutcome::Changed:
-        sources_changed = true;
+    // A failure on either file takes priority over the other succeeding: silently reporting
+    // "Success" would hide that one of two active repo declarations was left stale.
+    if (anyFailed) {
+        if (!quiet) {
+            QMessageBox::critical(this, tr("Error"), tr("Could not change the repo."));
+        }
+        return false;
+    }
+    if (anyChanged) {
         if (!quiet) {
             QMessageBox::information(this, tr("Success"),
                                      tr("Your new selection will take effect the next time sources are updated."));
         }
         return true;
-    case UpdateOutcome::NoChangeNeeded:
+    }
+    if (anyExists) {
         // Already pointing at this mirror -- not a failure, so don't show "Could not change".
         if (!quiet) {
             QMessageBox::information(this, tr("No Changes"),
                                      tr("The selected repository is already configured."));
         }
         return true;
-    case UpdateOutcome::NotApplicable:
-    case UpdateOutcome::Failed:
-        if (!quiet) {
-            QMessageBox::critical(this, tr("Error"), tr("Could not change the repo."));
-        }
-        return false;
+    }
+    if (!quiet) {
+        QMessageBox::critical(this, tr("Error"), tr("Could not change the repo."));
     }
     return false;
 }
