@@ -208,7 +208,12 @@ void writePidFile(qint64 pid)
     }
     file.write(QByteArray::number(pid));
     file.close();
-    std::rename(QFile::encodeName(tmpPath).constData(), QFile::encodeName(pidFilePath()).constData());
+    if (std::rename(QFile::encodeName(tmpPath).constData(), QFile::encodeName(pidFilePath()).constData()) != 0) {
+        const int savedErrno = errno;
+        printError(
+            QString("Could not update tracked pid file: %1").arg(QString::fromLocal8Bit(std::strerror(savedErrno))));
+        QFile::remove(tmpPath);
+    }
 }
 
 // Only clears the tracked pid if it's still ours -- defense in depth on top of the per-caller
