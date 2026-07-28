@@ -213,6 +213,11 @@ void writePidFile(qint64 pid)
         printError(
             QString("Could not update tracked pid file: %1").arg(QString::fromLocal8Bit(std::strerror(savedErrno))));
         QFile::remove(tmpPath);
+        // Fail closed: whatever was at pidFilePath() before (nothing, or a previous, possibly
+        // stale entry) must not survive as if it still described this operation. Otherwise a
+        // later "kill" could read that stale pid and signal an unrelated allowed process instead
+        // of just reporting no cancellable operation.
+        QFile::remove(pidFilePath());
     }
 }
 
