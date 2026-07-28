@@ -35,7 +35,6 @@
 #include <QRadioButton>
 #include <QScreen>
 #include <QTemporaryDir>
-#include <QTemporaryFile>
 #include <QTextEdit>
 #include <QStringList>
 #include <QRegularExpression>
@@ -908,12 +907,6 @@ void MainWindow::pushFastestDebian_clicked()
         return;
     }
     progress->show();
-    QTemporaryFile tmpfile;
-    if (!tmpfile.open()) {
-        qDebug() << "Could not create temp file";
-        progress->hide();
-        return;
-    }
 
     QString ver_name = getDebianVerName(getDebianVerNum());
     if (ver_name == "buster" || ver_name == "bullseye") {
@@ -921,15 +914,13 @@ void MainWindow::pushFastestDebian_clicked()
                           // maybe it expects "stable"
     }
 
-    QStringList commandParts {"netselect-apt"};
+    QStringList args;
     if (!ver_name.isEmpty()) {
-        commandParts << ver_name;
+        args << ver_name;
     }
-    commandParts << "-o" << tmpfile.fileName();
 
-    QStringList args = commandParts;
-    args.removeFirst();
-    bool success = shell->procAsRoot("netselect-apt", args);
+    QString output;
+    bool success = shell->procAsRoot("netselect-apt", args, &output);
     progress->hide();
 
     if (!success) {
@@ -937,9 +928,8 @@ void MainWindow::pushFastestDebian_clicked()
         return;
     }
     QString repo;
-    tmpfile.seek(0);
-    while (!tmpfile.atEnd()) {
-        const QString line = QString::fromUtf8(tmpfile.readLine());
+    const QStringList lines = output.split('\n');
+    for (const QString &line : lines) {
         if (line.startsWith("deb ")) {
             repo = line.section(' ', 1, 1).trimmed();
             break;

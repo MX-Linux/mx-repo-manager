@@ -22,6 +22,7 @@
 #include <QHash>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QTemporaryFile>
 
 #include <cerrno>
 #include <csignal>
@@ -127,39 +128,6 @@ void printError(const QString &message)
     return !rest.isEmpty() && !rest.contains(QLatin1Char('/'));
 }
 
-// A caller can only ever point us at a file it already owns, never redirect a privileged write
-// at a file belonging to another user or root via a pre-planted path. pkexec exports PKEXEC_UID
-// as the uid of the user who invoked it; if it's absent we're already running as root directly
-// (no elevation boundary to enforce).
-[[nodiscard]] bool isOwnedByInvokingUser(const QString &path)
-{
-    const QByteArray pkexecUid = qgetenv("PKEXEC_UID");
-    if (pkexecUid.isEmpty()) {
-        return true;
-    }
-    bool ok = false;
-    const uint expectedUid = pkexecUid.toUInt(&ok);
-    return ok && QFileInfo(path).ownerId() == expectedUid;
-}
-
-// A file directly under the system temp directory that the invoking user already owns and that
-// isn't a symlink -- so a privileged write through it (netselect-apt's "-o") can't be redirected
-// to a file elsewhere on the system.
-[[nodiscard]] bool isTempFile(const QString &path)
-{
-    const QString tempDir = QDir::tempPath() + QLatin1Char('/');
-
-    if (!isCleanAbsolutePath(path) || !path.startsWith(tempDir)) {
-        return false;
-    }
-    const QString rest = path.mid(tempDir.size());
-    if (rest.isEmpty() || rest.contains(QLatin1Char('/'))) {
-        return false;
-    }
-    const QFileInfo info(path);
-    return !info.isSymLink() && isOwnedByInvokingUser(path);
-}
-
 [[nodiscard]] QString pidFilePath()
 {
     return QStringLiteral("/run/mx-repo-manager.pid");
@@ -241,18 +209,6 @@ void removePidFileIfMatches(qint64 pid)
         // The target pid is never taken from here -- see handleCancel(). This only validates the
         // signal-choice flag.
         return args.isEmpty() || args == QStringList {"-9"};
-    }
-    if (command == "netselect-apt") {
-        if (args.size() < 2 || args.size() > 3 || args.at(args.size() - 2) != "-o") {
-            return false;
-        }
-        if (args.size() == 3) {
-            static const QRegularExpression releaseName("^[A-Za-z0-9._-]+$");
-            if (!releaseName.match(args.constFirst()).hasMatch()) {
-                return false;
-            }
-        }
-        return isTempFile(args.constLast());
     }
     if (command == "netselect") {
         return args.size() >= 2 && args.at(0) == "-D" && args.at(1) == "-I";
@@ -358,6 +314,52 @@ void removePidFileIfMatches(qint64 pid)
     return 0;
 }
 
+// Runs netselect-apt with an output destination the helper creates and owns itself, never one
+// supplied by the caller: a freshly mkstemp()-style created file can't be a pre-planted symlink,
+// unlike a caller-supplied "-o" path that could be swapped for one between validation and use.
+// The resulting content is relayed back over our own stdout instead.
+[[nodiscard]] int handleNetselectApt(const QStringList &args)
+{
+    if (args.size() > 1) {
+        printError(QStringLiteral("Arguments not allowed for command: netselect-apt"));
+        return 127;
+    }
+    if (args.size() == 1) {
+        static const QRegularExpression releaseName("^[A-Za-z0-9._-]+$");
+        if (!releaseName.match(args.constFirst()).hasMatch()) {
+            printError(QStringLiteral("Arguments not allowed for command: netselect-apt"));
+            return 127;
+        }
+    }
+
+    const QString program = resolveBinary(allowedCommands().value(QStringLiteral("netselect-apt")));
+    if (program.isEmpty()) {
+        printError(QStringLiteral("Command is not available: netselect-apt"));
+        return 127;
+    }
+
+    QTemporaryFile outputFile;
+    outputFile.setAutoRemove(false);
+    if (!outputFile.open()) {
+        printError(QStringLiteral("Could not create a temporary output file"));
+        return 1;
+    }
+    const QString outputPath = outputFile.fileName();
+    outputFile.close();
+
+    QStringList fullArgs = args;
+    fullArgs << "-o" << outputPath;
+
+    ProcessResult result = runProcess(program, fullArgs, {}, /*trackForCancel=*/true);
+    if (result.started && result.exitStatus == QProcess::NormalExit && result.exitCode == 0) {
+        QFile output(outputPath);
+        result.standardOutput = output.open(QIODevice::ReadOnly) ? output.readAll() : QByteArray();
+        result.standardError.clear();
+    }
+    QFile::remove(outputPath);
+    return relayResult(result);
+}
+
 [[nodiscard]] int runAllowedCommand(const QString &command, const QStringList &args, const QByteArray &input = {})
 {
     if (command == "kill") {
@@ -366,6 +368,9 @@ void removePidFileIfMatches(qint64 pid)
             return 127;
         }
         return handleCancel(args);
+    }
+    if (command == "netselect-apt") {
+        return handleNetselectApt(args);
     }
 
     const auto commandIt = allowedCommands().constFind(command);
@@ -385,8 +390,7 @@ void removePidFileIfMatches(qint64 pid)
         return 127;
     }
 
-    const bool trackForCancel = command == QLatin1String("apt-get") || command == QLatin1String("netselect")
-        || command == QLatin1String("netselect-apt");
+    const bool trackForCancel = command == QLatin1String("apt-get") || command == QLatin1String("netselect");
     return relayResult(runProcess(program, args, input, trackForCancel));
 }
 
