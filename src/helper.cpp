@@ -172,7 +172,12 @@ void printError(const QString &message)
         }
         const QString &src = args.at(0);
         const QString &dst = args.at(1);
-        return (isManagedSourceFile(src) && isBackupFile(dst)) || (isBackupFile(src) && isManagedSourceFile(dst));
+        if (isManagedSourceFile(src) && isBackupFile(dst)) {
+            return true; // taking a fresh, uniquely-named backup
+        }
+        // Rollback direction: only ever restores a file this app already knows about, never
+        // conjures a brand-new source file from a backup's content.
+        return isBackupFile(src) && isManagedSourceFile(dst) && QFileInfo::exists(dst);
     }
     if (command == "mv") {
         QStringList positional = args;
@@ -185,7 +190,15 @@ void printError(const QString &message)
         }
         const QString &src = positional.at(0);
         const QString &dst = positional.at(1);
-        return (isTempFile(src) || isRestoreSourceFile(src)) && isManagedSourceFile(dst);
+        if (!(isTempFile(src) || isRestoreSourceFile(src)) || !isManagedSourceFile(dst)) {
+            return false;
+        }
+        // Only the restore flow (mv -b) legitimately recreates a file the user deleted; the
+        // replace/toggle flows (-f or no flag) always target a file that already exists. Without
+        // this, any *.list/*.sources name under sources.list.d would be accepted, letting a caller
+        // plant a brand-new, attacker-controlled APT source file that was never one of the app's
+        // known files.
+        return flag == "-b" || QFileInfo::exists(dst);
     }
     if (command == "kill") {
         QStringList positional = args;
