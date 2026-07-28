@@ -138,7 +138,10 @@ void MainWindow::replaceDebianRepos(const QString &url)
     }
 
     bool anyChange = false;
+    bool failed = false;
     const QString trimmedUrl = url.trimmed().remove(QRegularExpression("/$"));
+    QStringList changedFiles;
+    QStringList changedFilesBackups;
 
     for (const QString &filePath : files) {
         if (!QFile::exists(filePath)) {
@@ -181,14 +184,30 @@ void MainWindow::replaceDebianRepos(const QString &url)
 
         if (!Cmd().procAsRoot("cp", {filePath, backupFilePath})) {
             qWarning() << "Failed to backup" << filePath;
-            continue;
+            failed = true;
+            break;
         }
 
         if (!writeUpdatedFile(filePath, content)) {
-            continue;
+            failed = true;
+            break;
         }
 
+        changedFiles << filePath;
+        changedFilesBackups << backupFilePath;
         anyChange = true;
+    }
+
+    if (failed) {
+        qWarning() << "Rolling back" << changedFiles.size() << "file(s) after a failed repository update";
+        for (int i = 0; i < changedFiles.size(); ++i) {
+            if (!Cmd().procAsRoot("cp", {changedFilesBackups.at(i), changedFiles.at(i)})) {
+                qWarning() << "Failed to roll back" << changedFiles.at(i) << "from" << changedFilesBackups.at(i);
+            }
+        }
+        QMessageBox::critical(this, tr("Error"),
+                              tr("Failed to update the repository sources. Any changes made have been rolled back."));
+        return;
     }
 
     if (anyChange) {
