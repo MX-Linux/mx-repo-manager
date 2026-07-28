@@ -9,8 +9,7 @@ Homepage: https://github.com/MX-Linux/mx-repo-manager
 
 Package: mx-repo-manager
 Architecture: any
-Depends: apt-transport-https,
-         flags-common,
+Depends: flags-common,
          mx-repo-list,
          netselect-apt,
          unzip,
