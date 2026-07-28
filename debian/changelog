@@ -1,3 +1,14 @@
+mx-repo-manager (26.07) mx; urgency=medium
+
+  * Fix fastest Debian and MX mirror selection when some mirrors are unavailable.
+  * Open remote help links correctly in the system web browser.
+  * Prevent stalled repository operations from hanging indefinitely.
+  * Roll back repository source changes when an update or restore fails partway through.
+  * Restrict privileged repository operations to the files and actions required by the application.
+  * Add a manual page and correct the application category and helper installation metadata.
+
+ -- Adrian <adrian@mxlinux.org>  Tue, 28 Jul 2026 01:12:53 -0400
+
 mx-repo-manager (26.03) mx; urgency=medium
 
   * Use internal Qt window for displaying License and Help
