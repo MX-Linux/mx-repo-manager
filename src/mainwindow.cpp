@@ -188,25 +188,35 @@ void MainWindow::replaceDebianRepos(const QString &url)
             break;
         }
 
+        // Track for rollback as soon as the backup exists: writeUpdatedFile() can fail after its
+        // "mv" step already replaced the file's contents, so a false return doesn't mean filePath
+        // is untouched.
+        changedFiles << filePath;
+        changedFilesBackups << backupFilePath;
+
         if (!writeUpdatedFile(filePath, content)) {
             failed = true;
             break;
         }
 
-        changedFiles << filePath;
-        changedFilesBackups << backupFilePath;
         anyChange = true;
     }
 
     if (failed) {
         qWarning() << "Rolling back" << changedFiles.size() << "file(s) after a failed repository update";
+        bool rollbackFailed = false;
         for (int i = 0; i < changedFiles.size(); ++i) {
             if (!Cmd().procAsRoot("cp", {changedFilesBackups.at(i), changedFiles.at(i)})) {
                 qWarning() << "Failed to roll back" << changedFiles.at(i) << "from" << changedFilesBackups.at(i);
+                rollbackFailed = true;
             }
         }
         QMessageBox::critical(this, tr("Error"),
-                              tr("Failed to update the repository sources. Any changes made have been rolled back."));
+                              rollbackFailed ? tr("Failed to update the repository sources, and some changes could "
+                                                  "not be automatically rolled back. Check %1 to restore manually.")
+                                                    .arg(backupDir.path())
+                                            : tr("Failed to update the repository sources. Any changes made have "
+                                                 "been rolled back."));
         return;
     }
 
