@@ -164,19 +164,6 @@ void printError(const QString &message)
     return QStringLiteral("/run/mx-repo-manager.pid");
 }
 
-void writePidFile(qint64 pid)
-{
-    QFile file(pidFilePath());
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(QByteArray::number(pid));
-    }
-}
-
-void removePidFile()
-{
-    QFile::remove(pidFilePath());
-}
-
 [[nodiscard]] qint64 readTrackedPid()
 {
     QFile file(pidFilePath());
@@ -186,6 +173,30 @@ void removePidFile()
     bool ok = false;
     const qint64 pid = QString::fromUtf8(file.readAll()).trimmed().toLongLong(&ok);
     return ok ? pid : -1;
+}
+
+// Written via a temp file + atomic rename so a concurrent readTrackedPid() (from another
+// in-flight helper invocation, e.g. a second app instance) never sees a torn/partial write.
+void writePidFile(qint64 pid)
+{
+    const QString tmpPath = pidFilePath() + QStringLiteral(".new");
+    QFile file(tmpPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return;
+    }
+    file.write(QByteArray::number(pid));
+    file.close();
+    std::rename(QFile::encodeName(tmpPath).constData(), QFile::encodeName(pidFilePath()).constData());
+}
+
+// Only clears the tracked pid if it's still ours: two elevated long-running operations can
+// overlap (e.g. two instances of this app), and the one that finishes first must not erase the
+// other's still-valid tracking entry.
+void removePidFileIfMatches(qint64 pid)
+{
+    if (readTrackedPid() == pid) {
+        QFile::remove(pidFilePath());
+    }
 }
 
 // Extra guard against the tracked pid having exited and been reused for an unrelated process by
@@ -293,13 +304,13 @@ void removePidFile()
         result.exitStatus = QProcess::CrashExit;
         result.exitCode = 124; // conventional timeout exit code
         if (trackForCancel) {
-            removePidFile();
+            removePidFileIfMatches(process.processId());
         }
         return result;
     }
 
     if (trackForCancel) {
-        removePidFile();
+        removePidFileIfMatches(process.processId());
     }
 
     result.exitStatus = process.exitStatus();
