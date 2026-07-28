@@ -461,6 +461,20 @@ void removePidFileIfMatches(qint64 pid)
 // Writes new content for a managed APT source file directly as root: no caller-supplied path is
 // ever trusted as the source of file content, only the target location and the bytes received
 // over our own stdin (which nothing but our direct parent process can feed).
+//
+// Known, accepted residual: --allow-create (needed by the restore flow to recreate a file the
+// user deleted) is just another argument to a directly-callable action, so a caller invoking the
+// helper itself during the pkexec auth-cache window -- not only the GUI -- can also use it to
+// create a brand-new *.list/*.sources file under sources.list.d. This can't be closed by
+// validating arguments more tightly: PolicyKit's auth_admin_keep authorizes running this binary
+// for the session, not any specific calling process, so any gate added here (a flag, a token
+// minted by an earlier call, a narrower filename allow-list) is just as directly invokable by
+// that same caller. Fully closing this needs either dropping auth_admin_keep in favor of
+// re-authenticating every privileged action (real UX cost), or replacing this pkexec+CLI-helper
+// model with a D-Bus service that verifies the caller's actual binary/peer credentials (a
+// significant rewrite of the whole elevation mechanism). Neither has been done; this is the same
+// class of limitation as a caller being able to overwrite the *content* of an existing managed
+// file, just extended to being able to create a new one.
 [[nodiscard]] int handleInstall(const QStringList &args, const QByteArray &content)
 {
     QStringList positional = args;
