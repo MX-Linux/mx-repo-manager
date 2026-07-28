@@ -89,9 +89,9 @@ void printError(const QString &message)
     return path.startsWith(QLatin1Char('/')) && QDir::cleanPath(path) == path;
 }
 
-// The fixed set of APT source files this app manages, plus any *.list/*.sources file living
-// directly inside sources.list.d (mirrors what the GUI enumerates) -- never in a subdirectory.
-[[nodiscard]] bool isManagedSourceFile(const QString &path)
+// The fixed, always-present Debian source files. rm should never be able to remove any of
+// these -- it's only ever used to undo a just-created MX-specific restore file.
+[[nodiscard]] bool isFixedSourceFile(const QString &path)
 {
     static const QStringList fixedFiles {
         "/etc/apt/sources.list",
@@ -100,12 +100,19 @@ void printError(const QString &message)
         "/etc/apt/sources.list.d/debian-stable-updates.list",
         "/etc/apt/sources.list.d/debian-stable-updates.sources",
     };
+    return fixedFiles.contains(path);
+}
+
+// The fixed set of APT source files this app manages, plus any *.list/*.sources file living
+// directly inside sources.list.d (mirrors what the GUI enumerates) -- never in a subdirectory.
+[[nodiscard]] bool isManagedSourceFile(const QString &path)
+{
     static const QString sourcesListDir = QStringLiteral("/etc/apt/sources.list.d/");
 
     if (!isCleanAbsolutePath(path)) {
         return false;
     }
-    if (fixedFiles.contains(path)) {
+    if (isFixedSourceFile(path)) {
         return true;
     }
     if (!path.startsWith(sourcesListDir)) {
@@ -128,9 +135,55 @@ void printError(const QString &message)
     return !rest.isEmpty() && !rest.contains(QLatin1Char('/'));
 }
 
+[[nodiscard]] QString processName(qint64 pid)
+{
+    QFile commFile(QString("/proc/%1/comm").arg(pid));
+    if (!commFile.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    return QString::fromUtf8(commFile.readAll()).trimmed();
+}
+
+[[nodiscard]] qint64 parentPidOf(qint64 pid)
+{
+    QFile statFile(QString("/proc/%1/stat").arg(pid));
+    if (!statFile.open(QIODevice::ReadOnly)) {
+        return -1;
+    }
+    const QString stat = QString::fromUtf8(statFile.readAll());
+    // Format: "pid (comm) state ppid ..." -- comm can itself contain spaces/parens, so skip past
+    // the last ')' before splitting the remaining fields on spaces.
+    const int closeParen = stat.lastIndexOf(QLatin1Char(')'));
+    if (closeParen == -1) {
+        return -1;
+    }
+    const QStringList fields = stat.mid(closeParen + 2).split(QLatin1Char(' '));
+    if (fields.size() < 2) {
+        return -1;
+    }
+    bool ok = false;
+    const qint64 ppid = fields.at(1).toLongLong(&ok);
+    return ok ? ppid : -1;
+}
+
+// The pid of the actual GUI/caller process that invoked us, walking past an intermediate pkexec
+// hop if present (pkexec forks before exec'ing us, so our direct parent is pkexec itself, not the
+// GUI). Derived from real process ancestry, not anything a caller supplies, so pidfile-based
+// operation tracking can be scoped per app instance instead of one process ID being able to read
+// or clobber a different instance's tracked operation via a shared, global file.
+[[nodiscard]] qint64 callerPid()
+{
+    const qint64 directParent = static_cast<qint64>(getppid());
+    if (processName(directParent) != QLatin1String("pkexec")) {
+        return directParent;
+    }
+    const qint64 grandparent = parentPidOf(directParent);
+    return grandparent > 0 ? grandparent : directParent;
+}
+
 [[nodiscard]] QString pidFilePath()
 {
-    return QStringLiteral("/run/mx-repo-manager.pid");
+    return QString("/run/mx-repo-manager-%1.pid").arg(callerPid());
 }
 
 [[nodiscard]] qint64 readTrackedPid()
@@ -144,8 +197,8 @@ void printError(const QString &message)
     return ok ? pid : -1;
 }
 
-// Written via a temp file + atomic rename so a concurrent readTrackedPid() (from another
-// in-flight helper invocation, e.g. a second app instance) never sees a torn/partial write.
+// Written via a temp file + atomic rename so a concurrent readTrackedPid() never sees a
+// torn/partial write.
 void writePidFile(qint64 pid)
 {
     const QString tmpPath = pidFilePath() + QStringLiteral(".new");
@@ -158,9 +211,8 @@ void writePidFile(qint64 pid)
     std::rename(QFile::encodeName(tmpPath).constData(), QFile::encodeName(pidFilePath()).constData());
 }
 
-// Only clears the tracked pid if it's still ours: two elevated long-running operations can
-// overlap (e.g. two instances of this app), and the one that finishes first must not erase the
-// other's still-valid tracking entry.
+// Only clears the tracked pid if it's still ours -- defense in depth on top of the per-caller
+// pidfile path, in case of any overlapping tracked operations within the same instance.
 void removePidFileIfMatches(qint64 pid)
 {
     if (readTrackedPid() == pid) {
@@ -214,8 +266,11 @@ void removePidFileIfMatches(qint64 pid)
         return args.size() >= 2 && args.at(0) == "-D" && args.at(1) == "-I";
     }
     if (command == "rm") {
-        // Only ever used to undo a just-created restore file on rollback -- never an arbitrary path.
-        return args.size() == 2 && args.at(0) == "-f" && isManagedSourceFile(args.at(1));
+        // Only ever used to undo a just-created MX-specific restore file on rollback. Never one of
+        // the fixed Debian source files -- restore never creates those, so rm should never be able
+        // to remove one even if invoked directly rather than via the actual restore/rollback flow.
+        return args.size() == 2 && args.at(0) == "-f" && isManagedSourceFile(args.at(1))
+            && !isFixedSourceFile(args.at(1));
     }
     return false;
 }
