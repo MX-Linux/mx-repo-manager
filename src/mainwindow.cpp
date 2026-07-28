@@ -745,6 +745,7 @@ QFileInfoList MainWindow::listAptFiles()
 void MainWindow::pushOk_clicked()
 {
     bool appliedChanges = false;
+    bool anyFailures = false;
     if (!queued_changes.isEmpty()) {
         for (const QStringList &changes : std::as_const(queued_changes)) {
             const QString &text = changes.at(0);
@@ -754,6 +755,7 @@ void MainWindow::pushOk_clicked()
             QFile file(file_name);
             if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
                 qWarning() << "Could not open file:" << file_name;
+                anyFailures = true;
                 continue;
             }
 
@@ -771,6 +773,9 @@ void MainWindow::pushOk_clicked()
 
             if (shell->installAsRoot(file_name, updatedContent.toUtf8())) {
                 appliedChanges = true;
+            } else {
+                qWarning() << "Failed to apply change to" << file_name;
+                anyFailures = true;
             }
         }
         queued_changes.clear();
@@ -780,6 +785,11 @@ void MainWindow::pushOk_clicked()
     }
     setSelected();
     refresh();
+    if (anyFailures) {
+        QMessageBox::warning(this, tr("Some Changes Not Applied"),
+                             tr("One or more repository changes could not be applied. Please check "
+                                "the affected sources manually."));
+    }
 }
 
 void MainWindow::pushAbout_clicked()
