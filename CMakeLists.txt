@@ -120,6 +120,8 @@ set(RESOURCE_FILES
 
 # Get all translation files
 file(GLOB TRANSLATION_FILES "translations/*.ts")
+# en_US duplicates the English source translation and must not be packaged.
+list(REMOVE_ITEM TRANSLATION_FILES "${CMAKE_SOURCE_DIR}/translations/${PROJECT_NAME}_en_US.ts")
 
 # Create the executable
 add_executable(mx-repo-manager
