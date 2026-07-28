@@ -610,65 +610,78 @@ bool MainWindow::replaceRepos(const QString &url, bool quiet)
     const QString trimmedUrl = url.trimmed().remove(QRegularExpression("/$"));
     const QString mx_list {"/etc/apt/sources.list.d/mx.list"};
     const QString mx_sources {"/etc/apt/sources.list.d/mx.sources"};
-    // MX installs ship exactly one of these two formats, never both -- same assumption
-    // pushRestoreSources_clicked() makes.
-    const QString targetPath = QFile::exists(mx_list) ? mx_list : mx_sources;
-    const bool useSourcesFormat = targetPath == mx_sources;
 
-    const auto fail = [&]() -> bool {
-        if (!quiet) {
-            QMessageBox::critical(this, tr("Error"), tr("Could not change the repo."));
+    enum class UpdateOutcome { NotApplicable, NoChangeNeeded, Changed, Failed };
+
+    auto tryUpdate = [&](const QString &path, bool sourcesFormat) -> UpdateOutcome {
+        QFile file(path);
+        if (!file.exists()) {
+            return UpdateOutcome::NotApplicable;
         }
-        return false;
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            qWarning() << "Could not open file:" << path << file.errorString();
+            return UpdateOutcome::Failed;
+        }
+        QTextStream in(&file);
+        QString content = in.readAll();
+        file.close();
+
+        QString updated = content;
+        if (sourcesFormat) {
+            static const QRegularExpression uriPattern(
+                R"((URIs:\s*)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
+                QRegularExpression::CaseInsensitiveOption);
+            updated.replace(uriPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
+        } else {
+            static const QRegularExpression repoPattern(
+                R"((deb(?:-src)?\s+(?:\[.*?\]\s+)?)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
+                QRegularExpression::CaseInsensitiveOption);
+            updated.replace(repoPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
+        }
+        updated.replace(QRegularExpression(R"([\t ]{2,})"), " ");
+        updated.replace(QRegularExpression(R"([\t ]+$)", QRegularExpression::MultilineOption), "");
+
+        if (updated == content) {
+            return UpdateOutcome::NoChangeNeeded;
+        }
+        return writeUpdatedFile(path, updated) ? UpdateOutcome::Changed : UpdateOutcome::Failed;
     };
 
-    QFile file(targetPath);
-    if (!file.exists()) {
-        qWarning() << "No MX repo source file found at" << targetPath;
-        return fail();
+    // mx.list is the expected/preferred format, but don't assume mx.sources can't also exist
+    // (e.g. a stale leftover from a format migration, or vice versa): if the preferred file
+    // didn't need a change, still check the other one so a genuinely-active file in that format
+    // isn't left unmodified.
+    UpdateOutcome outcome = tryUpdate(mx_list, false);
+    if (outcome != UpdateOutcome::Changed) {
+        const UpdateOutcome sourcesOutcome = tryUpdate(mx_sources, true);
+        if (sourcesOutcome != UpdateOutcome::NotApplicable) {
+            outcome = sourcesOutcome;
+        }
     }
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Could not open file:" << targetPath << file.errorString();
-        return fail();
-    }
-    QTextStream in(&file);
-    QString content = in.readAll();
-    file.close();
 
-    QString updated = content;
-    if (useSourcesFormat) {
-        QRegularExpression uriPattern(
-            R"((URIs:\s*)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
-            QRegularExpression::CaseInsensitiveOption);
-        updated.replace(uriPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
-    } else {
-        QRegularExpression repoPattern(
-            R"((deb(?:-src)?\s+(?:\[.*?\]\s+)?)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
-            QRegularExpression::CaseInsensitiveOption);
-        updated.replace(repoPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
-    }
-    updated.replace(QRegularExpression(R"([\t ]{2,})"), " ");
-    updated.replace(QRegularExpression(R"([\t ]+$)", QRegularExpression::MultilineOption), "");
-
-    if (updated == content) {
+    switch (outcome) {
+    case UpdateOutcome::Changed:
+        sources_changed = true;
+        if (!quiet) {
+            QMessageBox::information(this, tr("Success"),
+                                     tr("Your new selection will take effect the next time sources are updated."));
+        }
+        return true;
+    case UpdateOutcome::NoChangeNeeded:
         // Already pointing at this mirror -- not a failure, so don't show "Could not change".
         if (!quiet) {
             QMessageBox::information(this, tr("No Changes"),
                                      tr("The selected repository is already configured."));
         }
         return true;
+    case UpdateOutcome::NotApplicable:
+    case UpdateOutcome::Failed:
+        if (!quiet) {
+            QMessageBox::critical(this, tr("Error"), tr("Could not change the repo."));
+        }
+        return false;
     }
-
-    if (!writeUpdatedFile(targetPath, updated)) {
-        return fail();
-    }
-
-    sources_changed = true;
-    if (!quiet) {
-        QMessageBox::information(this, tr("Success"),
-                                 tr("Your new selection will take effect the next time sources are updated."));
-    }
-    return true;
+    return false;
 }
 
 void MainWindow::setConnections()
