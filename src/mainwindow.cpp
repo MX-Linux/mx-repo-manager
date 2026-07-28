@@ -956,12 +956,17 @@ void MainWindow::pushFastestMX_clicked()
     QString out;
     bool success = shell->procAsRoot("netselect", QStringList {"-D", "-I"} + listMXUrls, &out);
     out = out.trimmed();
+    // netselect's result ("<score> <url>") and its "unknown host" diagnostics for unreachable
+    // mirrors both land in this same buffer (stdout and stderr merged), with no guaranteed
+    // ordering between the two, so the result line isn't reliably the last one. Identify it by
+    // shape instead of position, keeping the last match in case more than one line qualifies.
+    static const QRegularExpression resultLine(R"(^\d+\s+(\S+)$)");
     QString selectedRepo;
     const QStringList lines = out.split('\n', Qt::SkipEmptyParts);
-    if (!lines.isEmpty()) {
-        const QStringList fields = lines.constLast().simplified().split(' ');
-        if (fields.size() >= 2) {
-            selectedRepo = fields.at(1);
+    for (const QString &line : lines) {
+        const QRegularExpressionMatch match = resultLine.match(line.simplified());
+        if (match.hasMatch()) {
+            selectedRepo = match.captured(1);
         }
     }
     qDebug() << "FASTEST " << success << out;
