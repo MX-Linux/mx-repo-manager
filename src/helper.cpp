@@ -23,7 +23,12 @@
 #include <QProcess>
 #include <QRegularExpression>
 
+#include <cerrno>
+#include <csignal>
 #include <cstdio>
+#include <cstring>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace
 {
@@ -68,12 +73,8 @@ void printError(const QString &message)
 {
     static const QHash<QString, QStringList> commands {
         {"apt-get", {"/usr/bin/apt-get", "/bin/apt-get"}},
-        {"chmod", {"/usr/bin/chmod", "/bin/chmod"}},
-        {"chown", {"/usr/bin/chown", "/bin/chown"}},
         {"cp", {"/usr/bin/cp", "/bin/cp"}},
-        {"kill", {"/usr/bin/kill", "/bin/kill"}},
         {"mkdir", {"/usr/bin/mkdir", "/bin/mkdir"}},
-        {"mv", {"/usr/bin/mv", "/bin/mv"}},
         {"netselect", {"/usr/bin/netselect"}},
         {"netselect-apt", {"/usr/bin/netselect-apt"}},
         {"true", {"/usr/bin/true", "/bin/true"}},
@@ -125,7 +126,24 @@ void printError(const QString &message)
     return !rest.isEmpty() && !rest.contains(QLatin1Char('/'));
 }
 
-// A QTemporaryFile the GUI created directly under the system temp directory.
+// A caller can only ever point us at a file it already owns, never redirect a privileged write
+// at a file belonging to another user or root via a pre-planted path. pkexec exports PKEXEC_UID
+// as the uid of the user who invoked it; if it's absent we're already running as root directly
+// (no elevation boundary to enforce).
+[[nodiscard]] bool isOwnedByInvokingUser(const QString &path)
+{
+    const QByteArray pkexecUid = qgetenv("PKEXEC_UID");
+    if (pkexecUid.isEmpty()) {
+        return true;
+    }
+    bool ok = false;
+    const uint expectedUid = pkexecUid.toUInt(&ok);
+    return ok && QFileInfo(path).ownerId() == expectedUid;
+}
+
+// A file directly under the system temp directory that the invoking user already owns and that
+// isn't a symlink -- so a privileged write through it (netselect-apt's "-o") can't be redirected
+// to a file elsewhere on the system.
 [[nodiscard]] bool isTempFile(const QString &path)
 {
     const QString tempDir = QDir::tempPath() + QLatin1Char('/');
@@ -134,21 +152,55 @@ void printError(const QString &message)
         return false;
     }
     const QString rest = path.mid(tempDir.size());
-    return !rest.isEmpty() && !rest.contains(QLatin1Char('/'));
+    if (rest.isEmpty() || rest.contains(QLatin1Char('/'))) {
+        return false;
+    }
+    const QFileInfo info(path);
+    return !info.isSymLink() && isOwnedByInvokingUser(path);
 }
 
-// A *.list/*.sources file extracted from a package into a QTemporaryDir before being restored.
-[[nodiscard]] bool isRestoreSourceFile(const QString &path)
+[[nodiscard]] QString pidFilePath()
 {
-    const QString tempDir = QDir::tempPath() + QLatin1Char('/');
+    return QStringLiteral("/run/mx-repo-manager.pid");
+}
 
-    return isCleanAbsolutePath(path) && path.startsWith(tempDir)
-        && (path.endsWith(".list") || path.endsWith(".sources"));
+void writePidFile(qint64 pid)
+{
+    QFile file(pidFilePath());
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(QByteArray::number(pid));
+    }
+}
+
+void removePidFile()
+{
+    QFile::remove(pidFilePath());
+}
+
+[[nodiscard]] qint64 readTrackedPid()
+{
+    QFile file(pidFilePath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return -1;
+    }
+    bool ok = false;
+    const qint64 pid = QString::fromUtf8(file.readAll()).trimmed().toLongLong(&ok);
+    return ok ? pid : -1;
+}
+
+// Extra guard against the tracked pid having exited and been reused for an unrelated process by
+// the time "kill" runs.
+[[nodiscard]] bool isTrackedProcessAllowed(qint64 pid)
+{
+    static const QStringList allowedNames {"apt-get", "netselect", "netselect-apt"};
+    const QFileInfo exeLink(QString("/proc/%1/exe").arg(pid));
+    return allowedNames.contains(QFileInfo(exeLink.symLinkTarget()).fileName());
 }
 
 // Validate that the requested arguments match one of the specific operations this app ever
 // performs, so an authenticated pkexec session cannot be reused to run e.g.
-// "chmod 4755 /bin/bash" or "cp <anything> <anywhere>" -- only the program name was checked before.
+// "cp <anything> <anywhere>" or kill an arbitrary process -- only the program name was checked
+// before.
 [[nodiscard]] bool validateArgs(const QString &command, const QStringList &args)
 {
     if (command == "apt-get") {
@@ -159,12 +211,6 @@ void printError(const QString &message)
     }
     if (command == "mkdir") {
         return args == QStringList {"-p", QStringLiteral("/etc/apt/sources.list.d/backups")};
-    }
-    if (command == "chmod") {
-        return args.size() == 2 && args.at(0) == "644" && isManagedSourceFile(args.at(1));
-    }
-    if (command == "chown") {
-        return args.size() == 2 && (args.at(0) == "root:" || args.at(0) == "0:0") && isManagedSourceFile(args.at(1));
     }
     if (command == "cp") {
         if (args.size() != 2) {
@@ -179,38 +225,10 @@ void printError(const QString &message)
         // conjures a brand-new source file from a backup's content.
         return isBackupFile(src) && isManagedSourceFile(dst) && QFileInfo::exists(dst);
     }
-    if (command == "mv") {
-        QStringList positional = args;
-        QString flag;
-        if (!positional.isEmpty() && positional.constFirst().startsWith(QLatin1Char('-'))) {
-            flag = positional.takeFirst();
-        }
-        if (positional.size() != 2 || !(flag.isEmpty() || flag == "-f" || flag == "-b")) {
-            return false;
-        }
-        const QString &src = positional.at(0);
-        const QString &dst = positional.at(1);
-        if (!(isTempFile(src) || isRestoreSourceFile(src)) || !isManagedSourceFile(dst)) {
-            return false;
-        }
-        // Only the restore flow (mv -b) legitimately recreates a file the user deleted; the
-        // replace/toggle flows (-f or no flag) always target a file that already exists. Without
-        // this, any *.list/*.sources name under sources.list.d would be accepted, letting a caller
-        // plant a brand-new, attacker-controlled APT source file that was never one of the app's
-        // known files.
-        return flag == "-b" || QFileInfo::exists(dst);
-    }
     if (command == "kill") {
-        QStringList positional = args;
-        if (!positional.isEmpty() && positional.constFirst() == "-9") {
-            positional.removeFirst();
-        }
-        if (positional.size() != 1) {
-            return false;
-        }
-        bool ok = false;
-        const qint64 pid = positional.constFirst().toLongLong(&ok);
-        return ok && pid > 0;
+        // The target pid is never taken from here -- see handleCancel(). This only validates the
+        // signal-choice flag.
+        return args.isEmpty() || args == QStringList {"-9"};
     }
     if (command == "netselect-apt") {
         if (args.size() < 2 || args.size() > 3 || args.at(args.size() - 2) != "-o") {
@@ -241,7 +259,8 @@ void printError(const QString &message)
     return {};
 }
 
-[[nodiscard]] ProcessResult runProcess(const QString &program, const QStringList &args, const QByteArray &input = {})
+[[nodiscard]] ProcessResult runProcess(const QString &program, const QStringList &args, const QByteArray &input,
+                                       bool trackForCancel)
 {
     ProcessResult result;
 
@@ -254,6 +273,10 @@ void printError(const QString &message)
     }
 
     result.started = true;
+    if (trackForCancel) {
+        writePidFile(process.processId());
+    }
+
     if (!input.isEmpty()) {
         process.write(input);
     }
@@ -269,7 +292,14 @@ void printError(const QString &message)
                   .toUtf8();
         result.exitStatus = QProcess::CrashExit;
         result.exitCode = 124; // conventional timeout exit code
+        if (trackForCancel) {
+            removePidFile();
+        }
         return result;
+    }
+
+    if (trackForCancel) {
+        removePidFile();
     }
 
     result.exitStatus = process.exitStatus();
@@ -289,8 +319,39 @@ void printError(const QString &message)
     return result.exitStatus == QProcess::NormalExit ? result.exitCode : 1;
 }
 
+// Signals only the pid this helper itself most recently spawned for a long-running, cancellable
+// command, never a caller-supplied pid -- so invoking "kill" can, at worst, cancel the app's own
+// in-flight operation.
+[[nodiscard]] int handleCancel(const QStringList &args)
+{
+    const bool force = args.contains(QStringLiteral("-9"));
+    const qint64 pid = readTrackedPid();
+    if (pid <= 0) {
+        printError(QStringLiteral("No cancellable operation is currently running"));
+        return 1;
+    }
+    if (!isTrackedProcessAllowed(pid)) {
+        printError(QStringLiteral("Tracked process is no longer valid"));
+        return 1;
+    }
+    if (::kill(static_cast<pid_t>(pid), force ? SIGKILL : SIGTERM) != 0) {
+        const int savedErrno = errno;
+        printError(QString("Failed to signal process %1: %2").arg(pid).arg(QString::fromLocal8Bit(std::strerror(savedErrno))));
+        return 1;
+    }
+    return 0;
+}
+
 [[nodiscard]] int runAllowedCommand(const QString &command, const QStringList &args, const QByteArray &input = {})
 {
+    if (command == "kill") {
+        if (!validateArgs(command, args)) {
+            printError(QStringLiteral("Arguments not allowed for command: kill"));
+            return 127;
+        }
+        return handleCancel(args);
+    }
+
     const auto commandIt = allowedCommands().constFind(command);
     if (commandIt == allowedCommands().constEnd()) {
         printError(QString("Command is not allowed: %1").arg(command));
@@ -308,7 +369,9 @@ void printError(const QString &message)
         return 127;
     }
 
-    return relayResult(runProcess(program, args, input));
+    const bool trackForCancel = command == QLatin1String("apt-get") || command == QLatin1String("netselect")
+        || command == QLatin1String("netselect-apt");
+    return relayResult(runProcess(program, args, input, trackForCancel));
 }
 
 [[nodiscard]] int handleExec(const QStringList &args)
@@ -318,6 +381,57 @@ void printError(const QString &message)
         return 1;
     }
     return runAllowedCommand(args.constFirst(), args.mid(1), readHelperInput());
+}
+
+// Writes new content for a managed APT source file directly as root: no caller-supplied path is
+// ever trusted as the source of file content, only the target location and the bytes received
+// over our own stdin (which nothing but our direct parent process can feed).
+[[nodiscard]] int handleInstall(const QStringList &args, const QByteArray &content)
+{
+    if (args.size() != 1) {
+        printError(QStringLiteral("install requires exactly one target path"));
+        return 1;
+    }
+
+    const QString &targetPath = args.constFirst();
+    if (!isManagedSourceFile(targetPath)) {
+        printError(QString("Refusing to install to disallowed path: %1").arg(targetPath));
+        return 1;
+    }
+
+    const QString tmpPath = targetPath + QStringLiteral(".mxrm-new");
+    {
+        QFile tmpFile(tmpPath);
+        if (!tmpFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            printError(QString("Could not create %1: %2").arg(tmpPath, tmpFile.errorString()));
+            return 1;
+        }
+        if (tmpFile.write(content) != content.size()) {
+            printError(QString("Could not write %1: %2").arg(tmpPath, tmpFile.errorString()));
+            tmpFile.close();
+            QFile::remove(tmpPath);
+            return 1;
+        }
+    } // flush + close via scope exit
+
+    const QByteArray tmpPathLocal = QFile::encodeName(tmpPath);
+    if (::chmod(tmpPathLocal.constData(), 0644) != 0 || ::chown(tmpPathLocal.constData(), 0, 0) != 0) {
+        const int savedErrno = errno;
+        printError(QString("Could not set ownership/permissions on %1: %2")
+                       .arg(tmpPath, QString::fromLocal8Bit(std::strerror(savedErrno))));
+        QFile::remove(tmpPath);
+        return 1;
+    }
+
+    const QByteArray targetPathLocal = QFile::encodeName(targetPath);
+    if (std::rename(tmpPathLocal.constData(), targetPathLocal.constData()) != 0) {
+        const int savedErrno = errno;
+        printError(
+            QString("Could not install %1: %2").arg(targetPath, QString::fromLocal8Bit(std::strerror(savedErrno))));
+        QFile::remove(tmpPath);
+        return 1;
+    }
+    return 0;
 }
 } // namespace
 
@@ -335,6 +449,9 @@ int main(int argc, char *argv[])
 
     if (action == QLatin1String("exec")) {
         return handleExec(remainingArgs);
+    }
+    if (action == QLatin1String("install")) {
+        return handleInstall(remainingArgs, readHelperInput());
     }
 
     printError(QString("Unsupported helper action: %1").arg(action));

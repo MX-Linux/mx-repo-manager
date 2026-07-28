@@ -123,6 +123,11 @@ bool Cmd::procAsRoot(const QString &cmd, const QStringList &args, QString *outpu
     return proc(cmd, args, output, input, quiet, Elevation::Yes);
 }
 
+bool Cmd::installAsRoot(const QString &targetPath, const QByteArray &content, QuietMode quiet)
+{
+    return helperProc({"install", targetPath}, nullptr, &content, quiet);
+}
+
 bool Cmd::startDetachedAsRoot(const QString &cmd, const QStringList &args, QuietMode quiet, const QString &logFilePath,
                               QString *errorMessage)
 {

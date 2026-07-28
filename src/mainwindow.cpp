@@ -232,20 +232,8 @@ void MainWindow::replaceDebianRepos(const QString &url)
 
 bool MainWindow::writeUpdatedFile(const QString &filePath, const QString &content)
 {
-    QTemporaryFile tmpFile(QDir::tempPath() + "/XXXXXX.list");
-    if (!tmpFile.open()) {
-        qWarning() << "Could not open temporary file:" << tmpFile.fileName() << tmpFile.errorString();
-        return false;
-    }
-
-    {
-        QTextStream out(&tmpFile);
-        out << content;
-    } // Ensuring the QTextStream is flushed and closed before moving the file
-
     Cmd cmd;
-    if (!cmd.procAsRoot("mv", {"-f", tmpFile.fileName(), filePath}) || !cmd.procAsRoot("chown", {"root:", filePath})
-        || !cmd.procAsRoot("chmod", {"644", filePath})) {
+    if (!cmd.installAsRoot(filePath, content.toUtf8())) {
         qWarning() << "Failed to replace the file and update permissions for" << filePath;
         return false;
     }
@@ -524,9 +512,9 @@ void MainWindow::cancelOperation()
     auto processId = shell->processId();
     if (processId != 0) {
         Cmd cmd;
-        cmd.procAsRoot("kill", {QString::number(processId)});
+        cmd.procAsRoot("kill", {});
         if (!shell->waitForFinished(1000)) {
-            cmd.procAsRoot("kill", {"-9", QString::number(processId)});
+            cmd.procAsRoot("kill", {"-9"});
         }
     }
     procDone();
@@ -782,21 +770,7 @@ void MainWindow::pushOk_clicked()
                 continue;
             }
 
-            // Create temp file
-            QTemporaryFile tempFile;
-            if (!tempFile.open()) {
-                qWarning() << "Could not create temp file";
-                continue;
-            }
-
-            QTextStream out(&tempFile);
-            out << updatedContent;
-            out.flush();
-            tempFile.close();
-
-            if (shell->procAsRoot("mv", {tempFile.fileName(), file_name})
-                && shell->procAsRoot("chown", {"root:", file_name})
-                && shell->procAsRoot("chmod", {"644", file_name})) {
+            if (shell->installAsRoot(file_name, updatedContent.toUtf8())) {
                 appliedChanges = true;
             }
         }
@@ -1101,11 +1075,37 @@ void MainWindow::pushRestoreSources_clicked()
     const QFileInfoList restoredFiles
         = restoredSourcesDir.entryInfoList({"*.list", "*.sources"}, QDir::Files | QDir::Readable, QDir::Name);
 
+    const QDir backupDir("/etc/apt/sources.list.d/backups");
+    if (!backupDir.exists() && !Cmd().procAsRoot("mkdir", {"-p", backupDir.path()})) {
+        qWarning() << "Failed to create backup directory:" << backupDir.path();
+        QMessageBox::critical(this, tr("Error"), tr("Could not restore the original APT source files."));
+        return;
+    }
+
     bool restoreSuccess = !restoredFiles.isEmpty();
     for (const QFileInfo &sourceInfo : restoredFiles) {
         const QString targetPath = QString("/etc/apt/sources.list.d/%1").arg(sourceInfo.fileName());
-        restoreSuccess = shell->procAsRoot("mv", {"-b", sourceInfo.absoluteFilePath(), targetPath})
-            && shell->procAsRoot("chown", {"0:0", targetPath}) && shell->procAsRoot("chmod", {"644", targetPath});
+
+        if (QFile::exists(targetPath)) {
+            const QString backupFilePath = backupDir.absoluteFilePath(
+                sourceInfo.fileName() + "." + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+            if (!Cmd().procAsRoot("cp", {targetPath, backupFilePath})) {
+                qWarning() << "Failed to backup" << targetPath;
+                restoreSuccess = false;
+                break;
+            }
+        }
+
+        QFile sourceFile(sourceInfo.absoluteFilePath());
+        if (!sourceFile.open(QIODevice::ReadOnly)) {
+            qWarning() << "Could not read restored file:" << sourceInfo.absoluteFilePath();
+            restoreSuccess = false;
+            break;
+        }
+        const QByteArray content = sourceFile.readAll();
+        sourceFile.close();
+
+        restoreSuccess = shell->installAsRoot(targetPath, content);
         if (!restoreSuccess) {
             break;
         }
