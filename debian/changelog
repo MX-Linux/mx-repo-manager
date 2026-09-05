@@ -1,3 +1,10 @@
+mx-repo-manager (26.09) mx; urgency=medium
+
+  * Select the correct current MX repository when one mirror name contains
+    another mirror's name.
+
+ -- Adrian <adrian@mxlinux.org>  Fri, 04 Sep 2026 22:14:35 -0400
+
 mx-repo-manager (26.07) mx; urgency=medium
 
   * Fix fastest Debian and MX mirror selection when some mirrors are
