@@ -89,7 +89,7 @@ private:
     bool applyingChanges {false};
     bool sources_changed {false};
 
-    QStringList readMXRepos();
+    void readMXRepos();
     bool downloadFile(const QString &url, QFile *file, std::chrono::seconds timeout = 10s);
     bool replaceRepos(const QString &url, bool quiet = false);
     bool writeUpdatedFile(const QString &filePath, const QString &content);
@@ -105,7 +105,6 @@ private:
     void displayAllRepos(const QFileInfoList &apt_files);
     void displayMXRepos(const QStringList &repos, const QString &filter);
     void displaySelected(const QString &repo);
-    void extractUrls(const QStringList &repos);
     void getCurrentRepo(bool force = false);
     void initializeIcons();
     void refresh(bool force = false);

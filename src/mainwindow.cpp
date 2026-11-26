@@ -342,36 +342,40 @@ bool MainWindow::writeUpdatedFile(const QString &filePath, const QString &conten
     return true;
 }
 
-QStringList MainWindow::readMXRepos()
+void MainWindow::readMXRepos()
 {
+    repos.clear();
+    listMXUrls.clear();
     QTemporaryDir tmpdir;
-    QFile file(tmpdir.path() + "/repos.txt");
+    QFile file(tmpdir.filePath("repos.txt"));
     const QString remoteUrl = "https://raw.githubusercontent.com/MX-Linux/mx-repo-list/master/repos.txt";
-    const QString localPath = "/usr/share/mx-repo-list/repos.txt";
-
-    if (!downloadFile(remoteUrl, &file, 3s)) {
-        qWarning() << "Could not download 'repos.txt' from GitHub, falling back to local file.";
-        file.setFileName(localPath);
+    QStringList paths;
+    if (tmpdir.isValid() && downloadFile(remoteUrl, &file, 3s)) {
+        paths << file.fileName();
     }
-
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Could not open file:" << file.fileName() << file.errorString();
-        return {};
+    paths << "/usr/share/mx-repo-list/repos.txt";
+    for (const auto &path : paths) {
+        QFile catalog(path);
+        if (!catalog.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        const QString content = QString::fromUtf8(catalog.readAll());
+        if (catalog.error() != QFileDevice::NoError) {
+            continue;
+        }
+        for (const QString &entry : content.split('\n')) {
+            const QString line = entry.trimmed();
+            const QString url = line.section(" - ", 1).trimmed();
+            if (!line.startsWith('#') && isValidRepositoryUrl(url) && QUrl(url, QUrl::StrictMode).isValid()) {
+                repos << line;
+                listMXUrls << url;
+            }
+        }
+        if (!repos.isEmpty()) {
+            repos.sort(Qt::CaseInsensitive);
+            return;
+        }
     }
-
-    QTextStream in(&file);
-    QStringList fileContentList = in.readAll().trimmed().split('\n');
-    file.close();
-
-    fileContentList.sort(Qt::CaseInsensitive);
-
-    QStringList list;
-    std::copy_if(fileContentList.cbegin(), fileContentList.cend(), std::back_inserter(list),
-                 [](const QString &line) { return !line.startsWith('#'); });
-
-    extractUrls(list);
-    repos = list;
-    return list;
 }
 
 // Compares by exact host, not substring: "mxrepo.com" must not match "la.mxrepo.com".
@@ -379,63 +383,6 @@ bool MainWindow::repoEntryMatchesHost(const QString &repoLine, const QString &ho
 {
     const QString url = repoLine.section(" - ", 1, 1).trimmed();
     return QUrl(url).host().compare(host, Qt::CaseInsensitive) == 0;
-}
-
-void MainWindow::getCurrentRepo(bool force)
-{
-    QFile file("/etc/apt/sources.list.d/mx.list");
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        file.setFileName("/etc/apt/sources.list.d/mx.sources");
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            qWarning() << "Could not open either mx.list or mx.sources file:" << file.errorString();
-            return;
-        }
-    }
-
-    QTextStream in(&file);
-
-    QRegularExpression repoRegex {R"(^#?\s?deb\s+.*/repo[/]?)"};
-    QRegularExpression urlRegex {"//(.*?)/"};
-    QRegularExpression sourcesRegex {R"(URIs:\s*(.*?)(?:\s|$))"};
-
-    QString line;
-    while (in.readLineInto(&line)) {
-        line = line.trimmed();
-
-        if (file.fileName().endsWith("mx.sources")) {
-            QRegularExpressionMatch match = sourcesRegex.match(line);
-            if (match.hasMatch()) {
-                current_repo = urlRegex.match(match.captured(1)).captured(1);
-                break;
-            }
-        } else {
-            if (repoRegex.match(line).hasMatch()) {
-                QRegularExpressionMatch match = urlRegex.match(line);
-                if (match.hasMatch()) {
-                    current_repo = match.captured(1);
-                    break;
-                }
-            }
-        }
-    }
-    file.close();
-
-    if (force || repos.isEmpty()) {
-        readMXRepos();
-    }
-
-    bool repoFound = std::find_if(repos.cbegin(), repos.cend(),
-                                  [this](const QString &item) { return repoEntryMatchesHost(item, current_repo); })
-                     != repos.cend();
-
-    if (!repoFound) {
-        qDebug() << "Current repo not found in the up-to-date list of repos, it might have been removed as "
-                    "non-working; selecting mxrepo.com as default";
-        const QString defaultRepo = "http://mxrepo.com";
-        if (replaceRepos(defaultRepo, true)) {
-            current_repo = defaultRepo;
-        }
-    }
 }
 
 int MainWindow::getDebianVerNum()
@@ -577,6 +524,33 @@ QList<AptEntry> aptEntries(const QString &content, bool deb822)
     return entries;
 }
 
+QString fieldValue(const QString &stanza, const QString &name)
+{
+    QStringList values;
+    bool inField = false;
+    for (const QString &line : stanza.split('\n')) {
+        if (line.startsWith('#') || line.isEmpty()) {
+            continue;
+        }
+        if (!line.front().isSpace()) {
+            inField = line.startsWith(name + ':', Qt::CaseInsensitive);
+            if (inField) {
+                values << line.mid(name.size() + 1);
+            }
+        } else if (inField) {
+            values << line;
+        }
+    }
+    return values.join(' ').simplified();
+}
+
+bool stanzaEnabled(const QString &stanza)
+{
+    const QString value = fieldValue(stanza, "Enabled").toLower();
+    static const QStringList disabled {"0", "false", "no", "off", "disable", "without"};
+    return !disabled.contains(value);
+}
+
 bool enableAhsSource(const QString &path)
 {
     QFile file(path);
@@ -622,6 +596,64 @@ bool enableAhsSource(const QString &path)
 
 enum EntryRole { SourcePath = Qt::UserRole, SourceLine, OriginalText, OriginallyEnabled };
 } // namespace
+
+void MainWindow::getCurrentRepo(bool force)
+{
+    current_repo.clear();
+    QStringList hosts;
+    bool readFailed = false;
+    for (const auto &name : {"mx.list", "mx.sources"}) {
+        QFile file(QStringLiteral("/etc/apt/sources.list.d/") + name);
+        if (!file.exists()) {
+            continue;
+        }
+        if (!file.open(QIODevice::ReadOnly)) {
+            readFailed = true;
+            continue;
+        }
+        const bool deb822 = file.fileName().endsWith(".sources");
+        const auto entries = aptEntries(QString::fromUtf8(file.readAll()), deb822);
+        if (file.error() != QFileDevice::NoError) {
+            readFailed = true;
+            continue;
+        }
+        for (const auto &entry : entries) {
+            if (deb822 ? !stanzaEnabled(entry.text) : !entry.enabled) {
+                continue;
+            }
+            static const QRegularExpression legacyUri(R"(^\s*deb\s+(?:\[[^\]]*\]\s+)?(\S+))");
+            const QString uris = deb822 ? fieldValue(entry.text, "URIs") : legacyUri.match(entry.text).captured(1);
+            for (const auto &uri : uris.split(' ', Qt::SkipEmptyParts)) {
+                const QUrl url(uri, QUrl::StrictMode);
+                const QString path = url.adjusted(QUrl::NormalizePathSegments | QUrl::StripTrailingSlash).path();
+                if (isValidRepositoryUrl(uri) && url.isValid()
+                    && (path.endsWith("/mx/repo") || path.endsWith("/mx/testrepo"))) {
+                    hosts << url.host();
+                }
+            }
+        }
+    }
+
+    const bool reload = force || repos.isEmpty();
+    if (reload) {
+        readMXRepos();
+    }
+    for (const auto &host : hosts) {
+        if (std::any_of(repos.cbegin(), repos.cend(), [&](const QString &entry) {
+                return repoEntryMatchesHost(entry, host);
+            })) {
+            current_repo = host;
+            return;
+        }
+    }
+    if (hosts.isEmpty()) {
+        return;
+    }
+    current_repo = hosts.first();
+    if (reload && !readFailed && !repos.isEmpty() && replaceRepos("http://mxrepo.com", true)) {
+        current_repo = "mxrepo.com";
+    }
+}
 
 void MainWindow::displayAllRepos(const QFileInfoList &apt_files)
 {
@@ -721,22 +753,6 @@ void MainWindow::displaySelected(const QString &repo)
             radioSelectionChanged = true;
             ui->pushOk->setEnabled(true);
             break;
-        }
-    }
-}
-
-void MainWindow::extractUrls(const QStringList &repos)
-{
-    listMXUrls.clear();
-    listMXUrls.reserve(repos.size());
-    for (const QString &line : repos) {
-        QStringList linelist = line.split('-');
-        if (linelist.size() > 1) {
-            linelist.pop_front();
-            QString joinedLine = linelist.join('-').trimmed();
-            if (!joinedLine.isEmpty()) {
-                listMXUrls.append(joinedLine);
-            }
         }
     }
 }
