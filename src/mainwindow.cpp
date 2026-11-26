@@ -1090,7 +1090,7 @@ void MainWindow::treeWidget_itemChanged(QTreeWidgetItem *item, int column)
         new_text = setStanzaEnabled(text, enabled);
     } else {
         if (item->checkState(column) == Qt::Checked) {
-            new_text.remove(QRegularExpression("#\\s*"));
+            new_text.replace(QRegularExpression(R"(^([ \t]*)#[ \t]*)"), QStringLiteral("\\1"));
         } else {
             new_text.prepend("# ");
         }
