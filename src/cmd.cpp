@@ -1,4 +1,5 @@
 #include "cmd.h"
+#include "common.h"
 
 #include <QApplication>
 #include <QDebug>
@@ -74,7 +75,7 @@ bool Cmd::helperProc(const QStringList &helperArgs, QString *output, const QByte
         programArgs.prepend(helper);
     }
 
-    const bool result = proc(program, programArgs, output, input, quiet, Elevation::No);
+    const bool result = execute(program, programArgs, output, input, quiet, helperArgs.value(0) == "exec-cancellable");
     if (exitCode() == EXIT_CODE_PERMISSION_DENIED || exitCode() == EXIT_CODE_COMMAND_NOT_FOUND) {
         handleElevationError(exitCode());
     }
@@ -85,11 +86,17 @@ bool Cmd::proc(const QString &cmd, const QStringList &args, QString *output, con
                Elevation elevation)
 {
     if (elevation == Elevation::Yes) {
-        QStringList helperArgs {"exec", cmd};
+        QStringList helperArgs {isCancellableCommand(cmd) ? "exec-cancellable" : "exec", cmd};
         helperArgs += args;
         return helperProc(helperArgs, output, input, quiet);
     }
 
+    return execute(cmd, args, output, input, quiet, false);
+}
+
+bool Cmd::execute(const QString &cmd, const QStringList &args, QString *output, const QByteArray *input,
+                  QuietMode quiet, bool keepInputOpen)
+{
     outBuffer.clear();
     if (state() != QProcess::NotRunning) {
         qDebug() << "Process already running:" << program() << arguments();
@@ -107,7 +114,9 @@ bool Cmd::proc(const QString &cmd, const QStringList &args, QString *output, con
     if (input && !input->isEmpty()) {
         write(*input);
     }
-    closeWriteChannel();
+    if (!keepInputOpen) {
+        closeWriteChannel();
+    }
     loop.exec();
 
     if (output) {

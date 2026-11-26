@@ -20,3 +20,10 @@
  * along with this package. If not, see <http://www.gnu.org/licenses/>.
  **********************************************************************/
 #pragma once
+
+#include <QStringView>
+
+inline bool isCancellableCommand(QStringView command)
+{
+    return command == u"apt-get" || command == u"netselect" || command == u"netselect-apt";
+}

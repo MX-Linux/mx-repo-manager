@@ -15,7 +15,11 @@
  * (at your option) any later version.
  **********************************************************************/
 
+#include "common.h"
+
 #include <QCoreApplication>
+#include <QDeadlineTimer>
+#include <poll.h>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -135,110 +139,6 @@ void printError(const QString &message)
     return !rest.isEmpty() && !rest.contains(QLatin1Char('/'));
 }
 
-[[nodiscard]] QString processName(qint64 pid)
-{
-    QFile commFile(QString("/proc/%1/comm").arg(pid));
-    if (!commFile.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    return QString::fromUtf8(commFile.readAll()).trimmed();
-}
-
-[[nodiscard]] qint64 parentPidOf(qint64 pid)
-{
-    QFile statFile(QString("/proc/%1/stat").arg(pid));
-    if (!statFile.open(QIODevice::ReadOnly)) {
-        return -1;
-    }
-    const QString stat = QString::fromUtf8(statFile.readAll());
-    // Format: "pid (comm) state ppid ..." -- comm can itself contain spaces/parens, so skip past
-    // the last ')' before splitting the remaining fields on spaces.
-    const int closeParen = stat.lastIndexOf(QLatin1Char(')'));
-    if (closeParen == -1) {
-        return -1;
-    }
-    const QStringList fields = stat.mid(closeParen + 2).split(QLatin1Char(' '));
-    if (fields.size() < 2) {
-        return -1;
-    }
-    bool ok = false;
-    const qint64 ppid = fields.at(1).toLongLong(&ok);
-    return ok ? ppid : -1;
-}
-
-// The pid of the actual GUI/caller process that invoked us, walking past an intermediate pkexec
-// hop if present (pkexec forks before exec'ing us, so our direct parent is pkexec itself, not the
-// GUI). Derived from real process ancestry, not anything a caller supplies, so pidfile-based
-// operation tracking can be scoped per app instance instead of one process ID being able to read
-// or clobber a different instance's tracked operation via a shared, global file.
-[[nodiscard]] qint64 callerPid()
-{
-    const qint64 directParent = static_cast<qint64>(getppid());
-    if (processName(directParent) != QLatin1String("pkexec")) {
-        return directParent;
-    }
-    const qint64 grandparent = parentPidOf(directParent);
-    return grandparent > 0 ? grandparent : directParent;
-}
-
-[[nodiscard]] QString pidFilePath()
-{
-    return QString("/run/mx-repo-manager-%1.pid").arg(callerPid());
-}
-
-[[nodiscard]] qint64 readTrackedPid()
-{
-    QFile file(pidFilePath());
-    if (!file.open(QIODevice::ReadOnly)) {
-        return -1;
-    }
-    bool ok = false;
-    const qint64 pid = QString::fromUtf8(file.readAll()).trimmed().toLongLong(&ok);
-    return ok ? pid : -1;
-}
-
-// Written via a temp file + atomic rename so a concurrent readTrackedPid() never sees a
-// torn/partial write.
-void writePidFile(qint64 pid)
-{
-    const QString tmpPath = pidFilePath() + QStringLiteral(".new");
-    QFile file(tmpPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        return;
-    }
-    file.write(QByteArray::number(pid));
-    file.close();
-    if (std::rename(QFile::encodeName(tmpPath).constData(), QFile::encodeName(pidFilePath()).constData()) != 0) {
-        const int savedErrno = errno;
-        printError(
-            QString("Could not update tracked pid file: %1").arg(QString::fromLocal8Bit(std::strerror(savedErrno))));
-        QFile::remove(tmpPath);
-        // Fail closed: whatever was at pidFilePath() before (nothing, or a previous, possibly
-        // stale entry) must not survive as if it still described this operation. Otherwise a
-        // later "kill" could read that stale pid and signal an unrelated allowed process instead
-        // of just reporting no cancellable operation.
-        QFile::remove(pidFilePath());
-    }
-}
-
-// Only clears the tracked pid if it's still ours -- defense in depth on top of the per-caller
-// pidfile path, in case of any overlapping tracked operations within the same instance.
-void removePidFileIfMatches(qint64 pid)
-{
-    if (readTrackedPid() == pid) {
-        QFile::remove(pidFilePath());
-    }
-}
-
-// Extra guard against the tracked pid having exited and been reused for an unrelated process by
-// the time "kill" runs.
-[[nodiscard]] bool isTrackedProcessAllowed(qint64 pid)
-{
-    static const QStringList allowedNames {"apt-get", "netselect", "netselect-apt"};
-    const QFileInfo exeLink(QString("/proc/%1/exe").arg(pid));
-    return allowedNames.contains(QFileInfo(exeLink.symLinkTarget()).fileName());
-}
-
 // Validate that the requested arguments match one of the specific operations this app ever
 // performs, so an authenticated pkexec session cannot be reused to run e.g.
 // "cp <anything> <anywhere>" or kill an arbitrary process -- only the program name was checked
@@ -267,11 +167,6 @@ void removePidFileIfMatches(qint64 pid)
         // conjures a brand-new source file from a backup's content.
         return isBackupFile(src) && isManagedSourceFile(dst) && QFileInfo::exists(dst);
     }
-    if (command == "kill") {
-        // The target pid is never taken from here -- see handleCancel(). This only validates the
-        // signal-choice flag.
-        return args.isEmpty() || args == QStringList {"-9"};
-    }
     if (command == "netselect") {
         return args.size() >= 2 && args.at(0) == "-D" && args.at(1) == "-I";
     }
@@ -296,52 +191,67 @@ void removePidFileIfMatches(qint64 pid)
     return {};
 }
 
-[[nodiscard]] ProcessResult runProcess(const QString &program, const QStringList &args, const QByteArray &input,
-                                       bool trackForCancel)
+// Only the process that launched this helper holds the write end of its control pipe.
+bool cancelRequested()
+{
+    pollfd control {STDIN_FILENO, POLLIN, 0};
+    if (::poll(&control, 1, 0) <= 0) {
+        return false;
+    }
+    if (control.revents & POLLHUP) {
+        return true;
+    }
+    if (!(control.revents & POLLIN)) {
+        return false;
+    }
+    char byte = 0;
+    return ::read(STDIN_FILENO, &byte, 1) == 1 && byte == 'C';
+}
+
+[[nodiscard]] ProcessResult runProcess(const QString &program, const QStringList &args, bool monitorCancel)
 {
     ProcessResult result;
-
     QProcess process;
-    process.start(program, args, QIODevice::ReadWrite);
+    process.setStandardInputFile(QProcess::nullDevice());
+    process.setChildProcessModifier([] {
+        if (::setpgid(0, 0) == -1) {
+            ::_exit(1);
+        }
+    });
+    process.start(program, args, QIODevice::ReadOnly);
     if (!process.waitForStarted()) {
         result.standardError = QString("Failed to start %1").arg(program).toUtf8();
         return result;
     }
 
     result.started = true;
-    if (trackForCancel) {
-        writePidFile(process.processId());
-    }
-
-    if (!input.isEmpty()) {
-        process.write(input);
-    }
-    process.closeWriteChannel();
-    if (!process.waitForFinished(kProcessTimeoutMs)) {
-        process.kill();
-        process.waitForFinished(2000);
-        result.standardOutput = process.readAllStandardOutput();
-        result.standardError = process.readAllStandardError()
-            + QString("\nCommand timed out after %1 seconds and was killed: %2\n")
-                  .arg(kProcessTimeoutMs / 1000)
-                  .arg(program)
-                  .toUtf8();
-        result.exitStatus = QProcess::CrashExit;
-        result.exitCode = 124; // conventional timeout exit code
-        if (trackForCancel) {
-            removePidFileIfMatches(process.processId());
+    const auto leader = static_cast<pid_t>(process.processId());
+    QDeadlineTimer deadline(kProcessTimeoutMs);
+    while (process.state() != QProcess::NotRunning) {
+        const bool cancelled = monitorCancel && cancelRequested();
+        if (cancelled || deadline.hasExpired()) {
+            // The leader remains our unreaped child throughout escalation, so the group ID cannot
+            // be recycled even when a shell exits before a child that ignored SIGTERM.
+            ::kill(-leader, SIGTERM);
+            QDeadlineTimer grace(1000);
+            while (!grace.hasExpired()) {
+                ::poll(nullptr, 0, static_cast<int>(grace.remainingTime()));
+            }
+            ::kill(-leader, SIGKILL);
+            process.waitForFinished(-1);
+            result.standardError = cancelled ? QByteArray("Operation cancelled\n") : QByteArray("Command timed out\n");
+            result.exitCode = cancelled ? 130 : 124;
+            break;
         }
-        return result;
+        const int remaining = static_cast<int>(deadline.remainingTime());
+        process.waitForFinished(monitorCancel ? std::min(remaining, 100) : remaining);
     }
-
-    if (trackForCancel) {
-        removePidFileIfMatches(process.processId());
+    if (result.standardError.isEmpty()) {
+        result.exitStatus = process.exitStatus();
+        result.exitCode = process.exitCode();
     }
-
-    result.exitStatus = process.exitStatus();
-    result.exitCode = process.exitCode();
     result.standardOutput = process.readAllStandardOutput();
-    result.standardError = process.readAllStandardError();
+    result.standardError += process.readAllStandardError();
     return result;
 }
 
@@ -360,34 +270,11 @@ void removePidFileIfMatches(qint64 pid)
     return result.exitStatus == QProcess::NormalExit ? result.exitCode : 1;
 }
 
-// Signals only the pid this helper itself most recently spawned for a long-running, cancellable
-// command, never a caller-supplied pid -- so invoking "kill" can, at worst, cancel the app's own
-// in-flight operation.
-[[nodiscard]] int handleCancel(const QStringList &args)
-{
-    const bool force = args.contains(QStringLiteral("-9"));
-    const qint64 pid = readTrackedPid();
-    if (pid <= 0) {
-        printError(QStringLiteral("No cancellable operation is currently running"));
-        return 1;
-    }
-    if (!isTrackedProcessAllowed(pid)) {
-        printError(QStringLiteral("Tracked process is no longer valid"));
-        return 1;
-    }
-    if (::kill(static_cast<pid_t>(pid), force ? SIGKILL : SIGTERM) != 0) {
-        const int savedErrno = errno;
-        printError(QString("Failed to signal process %1: %2").arg(pid).arg(QString::fromLocal8Bit(std::strerror(savedErrno))));
-        return 1;
-    }
-    return 0;
-}
-
 // Runs netselect-apt with an output destination the helper creates and owns itself, never one
 // supplied by the caller: a freshly mkstemp()-style created file can't be a pre-planted symlink,
 // unlike a caller-supplied "-o" path that could be swapped for one between validation and use.
 // The resulting content is relayed back over our own stdout instead.
-[[nodiscard]] int handleNetselectApt(const QStringList &args)
+[[nodiscard]] int handleNetselectApt(const QStringList &args, bool monitorCancel)
 {
     if (args.size() > 1) {
         printError(QStringLiteral("Arguments not allowed for command: netselect-apt"));
@@ -419,7 +306,7 @@ void removePidFileIfMatches(qint64 pid)
     QStringList fullArgs = args;
     fullArgs << "-o" << outputPath;
 
-    ProcessResult result = runProcess(program, fullArgs, {}, /*trackForCancel=*/true);
+    ProcessResult result = runProcess(program, fullArgs, monitorCancel);
     if (result.started && result.exitStatus == QProcess::NormalExit && result.exitCode == 0) {
         QFile output(outputPath);
         result.standardOutput = output.open(QIODevice::ReadOnly) ? output.readAll() : QByteArray();
@@ -429,17 +316,10 @@ void removePidFileIfMatches(qint64 pid)
     return relayResult(result);
 }
 
-[[nodiscard]] int runAllowedCommand(const QString &command, const QStringList &args, const QByteArray &input = {})
+[[nodiscard]] int runAllowedCommand(const QString &command, const QStringList &args, bool monitorCancel)
 {
-    if (command == "kill") {
-        if (!validateArgs(command, args)) {
-            printError(QStringLiteral("Arguments not allowed for command: kill"));
-            return 1;
-        }
-        return handleCancel(args);
-    }
     if (command == "netselect-apt") {
-        return handleNetselectApt(args);
+        return handleNetselectApt(args, monitorCancel);
     }
 
     const auto commandIt = allowedCommands().constFind(command);
@@ -459,17 +339,20 @@ void removePidFileIfMatches(qint64 pid)
         return 1;
     }
 
-    const bool trackForCancel = command == QLatin1String("apt-get") || command == QLatin1String("netselect");
-    return relayResult(runProcess(program, args, input, trackForCancel));
+    return relayResult(runProcess(program, args, monitorCancel));
 }
 
-[[nodiscard]] int handleExec(const QStringList &args)
+[[nodiscard]] int handleExec(const QStringList &args, bool monitorCancel)
 {
     if (args.isEmpty()) {
         printError(QStringLiteral("exec requires a command name"));
         return 1;
     }
-    return runAllowedCommand(args.constFirst(), args.mid(1), readHelperInput());
+    if (monitorCancel && !isCancellableCommand(args.constFirst())) {
+        printError(QStringLiteral("This command does not support cancellation"));
+        return 1;
+    }
+    return runAllowedCommand(args.constFirst(), args.mid(1), monitorCancel);
 }
 
 // Writes new content for a managed APT source file directly as root: no caller-supplied path is
@@ -564,8 +447,8 @@ int main(int argc, char *argv[])
     const QString action = args.constFirst();
     const QStringList remainingArgs = args.mid(1);
 
-    if (action == QLatin1String("exec")) {
-        return handleExec(remainingArgs);
+    if (action == "exec" || action == "exec-cancellable") {
+        return handleExec(remainingArgs, action == "exec-cancellable");
     }
     if (action == QLatin1String("install")) {
         return handleInstall(remainingArgs, readHelperInput());

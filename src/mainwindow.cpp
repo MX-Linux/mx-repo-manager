@@ -34,6 +34,7 @@
 #include <QProgressBar>
 #include <QRadioButton>
 #include <QScreen>
+#include <QVBoxLayout>
 #include <QScopedValueRollback>
 #include <utility>
 #include <QTemporaryDir>
@@ -74,7 +75,7 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     if (sources_changed) {
-        progress->setLabelText(tr("Updating package sources..."));
+        progressLabel->setText(tr("Updating package sources..."));
         progress->show();
         QApplication::processEvents();
 
@@ -717,15 +718,9 @@ void MainWindow::displayAllRepos(const QFileInfoList &apt_files)
 
 void MainWindow::cancelOperation()
 {
-    auto processId = shell->processId();
-    if (processId != 0) {
-        Cmd cmd;
-        cmd.procAsRoot("kill", {});
-        if (!shell->waitForFinished(1000)) {
-            cmd.procAsRoot("kill", {"-9"});
-        }
+    if (shell->state() != QProcess::NotRunning && shell->write("C", 1) == 1) {
+        progCancel->setDisabled(true);
     }
-    procDone();
 }
 
 void MainWindow::centerWindow()
@@ -779,6 +774,7 @@ void MainWindow::procTime()
 
 void MainWindow::procStart()
 {
+    progCancel->setEnabled(true);
     bar->setValue(0);
     QApplication::setOverrideCursor(QCursor(Qt::BusyCursor));
     timer.start(100ms);
@@ -903,19 +899,33 @@ void MainWindow::setConnections()
 
 void MainWindow::setProgressBar()
 {
-    progress = new QProgressDialog(this);
-    bar = new QProgressBar(progress);
-    progCancel = new QPushButton(tr("Cancel"));
+    // A progress dialog normally hides immediately on Cancel or Escape. Keep it visible until
+    // the operation's helper has actually finished.
+    class OperationDialog final : public QDialog {
+    public:
+        using QDialog::QDialog;
+        QPushButton *cancelButton {};
+        void reject() override { cancelButton->click(); }
+    protected:
+        void closeEvent(QCloseEvent *event) override {
+            cancelButton->click();
+            event->ignore();
+        }
+    };
+    auto *dialog = new OperationDialog(this);
+    progress = dialog;
+    bar = new QProgressBar(dialog);
+    progCancel = new QPushButton(tr("Cancel"), dialog);
+    dialog->cancelButton = progCancel;
     connect(progCancel, &QPushButton::clicked, this, &MainWindow::cancelOperation);
-    progress->setWindowModality(Qt::WindowModal);
-    progress->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint | Qt::WindowSystemMenuHint
-                             | Qt::WindowStaysOnTopHint);
-    progress->setCancelButton(progCancel);
-    progress->setLabelText(tr("Please wait..."));
-    progress->setAutoClose(false);
-    progress->setBar(bar);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint | Qt::WindowStaysOnTopHint);
+    progressLabel = new QLabel(tr("Please wait..."), dialog);
+    auto *layout = new QVBoxLayout(dialog);
+    layout->addWidget(progressLabel);
+    layout->addWidget(bar);
+    layout->addWidget(progCancel);
     bar->setTextVisible(false);
-    progress->reset();
 }
 
 QFileInfoList MainWindow::listAptFiles()

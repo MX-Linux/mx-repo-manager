@@ -28,7 +28,9 @@
 #include <QMessageBox>
 #include <QMap>
 #include <QNetworkAccessManager>
-#include <QProgressDialog>
+#include <QDialog>
+#include <QLabel>
+#include <QProgressBar>
 #include <QSettings>
 #include <QTimer>
 #include <QTreeWidget>
@@ -78,7 +80,8 @@ private:
     };
     QMap<QString, QMap<qsizetype, EntryChange>> queued_changes;
     QProgressBar *bar {};
-    QProgressDialog *progress {};
+    QDialog *progress {};
+    QLabel *progressLabel {};
     QPushButton *progCancel {};
     QSettings settings;
     QString current_repo;
