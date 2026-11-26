@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
             echo "  -d, --debug     Build in Debug mode (default: Release)"
-            echo "  -c, --clang     Use clang compiler"
+            echo "  -c, --clang     Use clang compiler (output in build/clang)"
             echo "  --clean         Clean build directory before building"
             echo "  --debian        Build Debian package"
             echo "  -h, --help      Show this help message"
@@ -97,6 +97,13 @@ if [ "$DEBIAN_BUILD" = true ]; then
     exit 0
 fi
 
+if [ "$USE_CLANG" = true ]; then
+    BUILD_DIR="build/clang"
+    CXX_COMPILER=clang++
+else
+    CXX_COMPILER=g++
+fi
+
 # Clean build directory if requested
 if [ "$CLEAN" = true ]; then
     echo "Cleaning build directory and debian artifacts..."
@@ -112,13 +119,10 @@ CMAKE_ARGS=(
     -G Ninja
     -B "$BUILD_DIR"
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    -DCMAKE_CXX_COMPILER="$CXX_COMPILER"
+    -DUSE_CLANG="$USE_CLANG"
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 )
-
-if [ "$USE_CLANG" = true ]; then
-    CMAKE_ARGS+=(-DUSE_CLANG=ON)
-    echo "Using clang compiler"
-fi
 
 cmake "${CMAKE_ARGS[@]}"
 

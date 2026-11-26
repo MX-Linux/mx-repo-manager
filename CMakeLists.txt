@@ -35,6 +35,12 @@ if(NOT DPKG_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to get version from debian/changelog using dpkg-parsechangelog")
 endif()
 
+# Preserve the stand-alone CMake option. Compiler detection runs inside project().
+option(USE_CLANG "Use clang++ when configuring a fresh build without an explicit compiler" OFF)
+if(USE_CLANG AND NOT DEFINED CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER clang++)
+endif()
+
 project(mx-repo-manager
     VERSION ${PROJECT_VERSION_FROM_CHANGELOG}
     DESCRIPTION "Repository management tool for MX Linux"
@@ -56,15 +62,6 @@ if(CMAKE_GENERATOR STREQUAL "Ninja")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         add_compile_options(-fcolor-diagnostics)
     endif()
-endif()
-
-# Option to use clang for testing builds
-option(USE_CLANG "Use clang compiler" OFF)
-if(USE_CLANG)
-    set(CMAKE_C_COMPILER clang)
-    set(CMAKE_CXX_COMPILER clang++)
-    set(CMAKE_CXX_COMPILER_ID "Clang")
-    message(STATUS "Using clang compiler")
 endif()
 
 # Find Qt6 components
@@ -165,7 +162,7 @@ target_compile_options(helper PRIVATE
 )
 
 # Add compiler-specific flags
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR USE_CLANG)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(mx-repo-manager PRIVATE -Werror=return-stack-address)
     target_compile_options(helper PRIVATE -Werror=return-stack-address)
 else()
@@ -197,7 +194,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(helper PRIVATE -O3)
 
     # Add LTO - different flags for different compilers
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR USE_CLANG)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(mx-repo-manager PRIVATE -flto=thin)
         target_link_options(mx-repo-manager PRIVATE -flto=thin)
         target_compile_options(helper PRIVATE -flto=thin)
