@@ -117,6 +117,7 @@ void MainWindow::refresh(bool force)
         queued_changes.clear();
         QMessageBox::information(this, tr("Sources reloaded"), tr("Reloading the sources discarded pending checkbox changes."));
     }
+    selectedMxUrl.clear();
     getCurrentRepo(force);
     displayMXRepos(repos, {});
     displayAllRepos(listAptFiles());
@@ -460,11 +461,13 @@ void MainWindow::displayMXRepos(const QStringList &repos, const QString &filter)
         auto *radio = new QRadioButton(repo);
         radio->setIcon(getFlag(country));
         ui->listWidget->setItemWidget(item, radio);
-        if (repoEntryMatchesHost(repo, current_repo)) {
+        const QString url = repo.section(" - ", 1).trimmed();
+        if (selectedMxUrl.isEmpty() ? repoEntryMatchesHost(repo, current_repo) : selectedMxUrl == url) {
             radio->setChecked(true);
             ui->listWidget->scrollToItem(item);
         }
-        connect(radio, &QRadioButton::clicked, this, [this]() {
+        connect(radio, &QRadioButton::clicked, this, [this, url]() {
+            selectedMxUrl = url;
             radioSelectionChanged = true;
             ui->pushOk->setEnabled(true);
         });
@@ -698,13 +701,22 @@ void MainWindow::displayAllRepos(const QFileInfoList &apt_files)
     ui->treeWidget->setHeaderLabels(columnNames);
     ui->treeWidgetDeb->setHeaderLabels(columnNames);
 
-    auto processEntries = [](QTreeWidgetItem *parentItem, const auto &entries) {
+    auto processEntries = [this](QTreeWidgetItem *parentItem, const auto &entries) {
+        const auto pending = queued_changes.constFind(parentItem->data(0, SourcePath).toString());
         for (const auto &item : entries) {
             auto *childItem = new QTreeWidgetItem(parentItem, {QString(), item.text});
             childItem->setData(1, SourceLine, item.line);
             childItem->setData(1, OriginalText, item.text);
             childItem->setData(1, OriginallyEnabled, item.enabled);
-            childItem->setCheckState(1, item.enabled ? Qt::Checked : Qt::Unchecked);
+            bool checked = item.enabled;
+            if (pending != queued_changes.cend()) {
+                const auto edit = pending->constFind(item.line);
+                if (edit != pending->cend() && edit->original == item.text) {
+                    childItem->setText(1, edit->replacement);
+                    checked = !item.enabled;
+                }
+            }
+            childItem->setCheckState(1, checked ? Qt::Checked : Qt::Unchecked);
         }
     };
 
@@ -768,33 +780,10 @@ void MainWindow::closeEvent([[maybe_unused]] QCloseEvent *event)
     event->accept();
 }
 
-void MainWindow::displaySelected(const QString &repo)
-{
-    for (int row = 0; row < ui->listWidget->count(); ++row) {
-        auto *item = ui->listWidget->item(row);
-        auto *radio = qobject_cast<QRadioButton *>(ui->listWidget->itemWidget(item));
-        if (radio && radio->text().contains(repo, Qt::CaseInsensitive)) {
-            radio->setChecked(true);
-            ui->listWidget->scrollToItem(item);
-            radioSelectionChanged = true;
-            ui->pushOk->setEnabled(true);
-            break;
-        }
-    }
-}
-
 void MainWindow::setSelected()
 {
-    if (!radioSelectionChanged) {
-        return;
-    }
-    for (int row = 0; row < ui->listWidget->count(); ++row) {
-        auto *item = ui->listWidget->item(row);
-        if (auto *radio = qobject_cast<QRadioButton *>(ui->listWidget->itemWidget(item)); radio && radio->isChecked()) {
-            QString url = radio->text().section(" - ", 1, 1).trimmed();
-            replaceRepos(url);
-            break;
-        }
+    if (radioSelectionChanged) {
+        replaceRepos(selectedMxUrl);
     }
 }
 
@@ -833,20 +822,7 @@ bool MainWindow::replaceRepos(const QString &url, bool quiet)
 
     enum class UpdateOutcome { NotApplicable, NoChangeNeeded, Changed, Failed };
 
-    auto tryUpdate = [&](const QString &path, bool sourcesFormat) -> UpdateOutcome {
-        QFile file(path);
-        if (!file.exists()) {
-            return UpdateOutcome::NotApplicable;
-        }
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            qWarning() << "Could not open file:" << path << file.errorString();
-            return UpdateOutcome::Failed;
-        }
-        QTextStream in(&file);
-        QString content = in.readAll();
-        file.close();
-
-        QString updated = content;
+    auto switchMirror = [&](QString updated, bool sourcesFormat) {
         if (sourcesFormat) {
             static const QRegularExpression uriPattern(
                 R"((URIs:\s*)(\S*)(/mx/(?:[.]?/)*repo/?|/mx/(?:[.]?/)*testrepo/?))",
@@ -858,13 +834,44 @@ bool MainWindow::replaceRepos(const QString &url, bool quiet)
                 QRegularExpression::CaseInsensitiveOption);
             updated.replace(repoPattern, QStringLiteral("\\1%1\\3").arg(trimmedUrl));
         }
-        updated.replace(QRegularExpression(R"([\t ]{2,})"), " ");
-        updated.replace(QRegularExpression(R"([\t ]+$)", QRegularExpression::MultilineOption), "");
+        return updated;
+    };
 
+    auto tryUpdate = [&](const QString &path, bool sourcesFormat) -> UpdateOutcome {
+        QFile file(path);
+        if (!file.exists()) {
+            return UpdateOutcome::NotApplicable;
+        }
+        if (!file.open(QIODevice::ReadOnly)) {
+            qWarning() << "Could not open file:" << path << file.errorString();
+            return UpdateOutcome::Failed;
+        }
+        const QByteArray bytes = file.readAll();
+        const QString content = QString::fromUtf8(bytes);
+        if (file.error() != QFileDevice::NoError || content.toUtf8() != bytes) {
+            return UpdateOutcome::Failed;
+        }
+        file.close();
+
+        const QString updated = switchMirror(content, sourcesFormat);
         if (updated == content) {
             return UpdateOutcome::NoChangeNeeded;
         }
-        return writeUpdatedFile(path, updated) ? UpdateOutcome::Changed : UpdateOutcome::Failed;
+        if (!writeUpdatedFile(path, updated)) {
+            return UpdateOutcome::Failed;
+        }
+        // Keep staged checkboxes attached to the same entry across our own mirror edit.
+        auto pending = queued_changes.find(path);
+        if (pending != queued_changes.end()) {
+            for (const auto &entry : aptEntries(content, sourcesFormat)) {
+                auto edit = pending->find(entry.line);
+                if (edit != pending->end() && edit->original == entry.text) {
+                    edit->original = switchMirror(edit->original, sourcesFormat);
+                    edit->replacement = switchMirror(edit->replacement, sourcesFormat);
+                }
+            }
+        }
+        return UpdateOutcome::Changed;
     };
 
     // Both formats are examined independently and unconditionally -- nothing enforces that MX
@@ -1234,9 +1241,15 @@ void MainWindow::pushFastestMX_clicked()
     }
     qDebug() << "FASTEST " << success << out;
     progress->hide();
-    if (success && !selectedRepo.isEmpty()) {
-        displaySelected(selectedRepo);
-        pushOk_clicked();
+    if (success && listMXUrls.contains(selectedRepo)) {
+        if (replaceRepos(selectedRepo)) {
+            selectedMxUrl = selectedRepo;
+            current_repo = QUrl(selectedRepo).host();
+            radioSelectionChanged = false;
+        }
+        displayMXRepos(repos, ui->lineSearch->text());
+        displayAllRepos(listAptFiles());
+        ui->pushOk->setEnabled(radioSelectionChanged || !queued_changes.isEmpty());
     } else {
         QMessageBox::critical(this, tr("Error"), tr("Could not detect fastest repo."));
     }

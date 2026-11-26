@@ -85,6 +85,7 @@ private:
     QPushButton *progCancel {};
     QSettings settings;
     QString current_repo;
+    QString selectedMxUrl;
     QStringList listMXUrls;
     QStringList repos;
     QTimer timer;
@@ -107,7 +108,6 @@ private:
     void centerWindow();
     void displayAllRepos(const QFileInfoList &apt_files);
     void displayMXRepos(const QStringList &repos, const QString &filter);
-    void displaySelected(const QString &repo);
     void getCurrentRepo(bool force = false);
     void initializeIcons();
     void refresh(bool force = false);
