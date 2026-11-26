@@ -1396,16 +1396,17 @@ void MainWindow::pushRestoreSources_clicked()
         installedTargets << targetPath;
     }
 
+    QStringList rollbackFailures;
     if (!restoreSuccess && !installedTargets.isEmpty()) {
         qWarning() << "Rolling back" << installedTargets.size() << "restored file(s) after failure";
         for (const QString &targetPath : std::as_const(installedTargets)) {
             const auto backupIt = targetBackups.constFind(targetPath);
             if (backupIt != targetBackups.constEnd()) {
                 if (!Cmd().procAsRoot("cp", {backupIt.value(), targetPath})) {
-                    qWarning() << "Failed to roll back" << targetPath;
+                    rollbackFailures << targetPath;
                 }
             } else if (!Cmd().procAsRoot("rm", {"-f", targetPath})) {
-                qWarning() << "Failed to remove newly-restored file during rollback:" << targetPath;
+                rollbackFailures << targetPath;
             }
         }
     }
@@ -1418,6 +1419,12 @@ void MainWindow::pushRestoreSources_clicked()
                                      + "\n\n"
                                      + tr("Your new selection will take effect the next time sources are updated."));
         sources_changed = true;
+    } else if (!rollbackFailures.isEmpty()) {
+        sources_changed = true;
+        QMessageBox::critical(this, tr("Incomplete restore"),
+                              tr("Automatic rollback failed for the following files.\n%1\n\n"
+                                 "Backups of previously existing files are in %2.")
+                                  .arg(rollbackFailures.join('\n'), backupDir.path()));
     } else {
         QMessageBox::critical(this, tr("Error"), tr("Could not restore the original APT source files."));
     }
