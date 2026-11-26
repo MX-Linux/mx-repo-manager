@@ -76,7 +76,8 @@ bool Cmd::helperProc(const QStringList &helperArgs, QString *output, const QByte
     }
 
     const bool result = execute(program, programArgs, output, input, quiet, helperArgs.value(0) == "exec-cancellable");
-    if (exitCode() == EXIT_CODE_PERMISSION_DENIED || exitCode() == EXIT_CODE_COMMAND_NOT_FOUND) {
+    if (error() != QProcess::FailedToStart
+        && (exitCode() == EXIT_CODE_PERMISSION_DENIED || exitCode() == EXIT_CODE_COMMAND_NOT_FOUND)) {
         handleElevationError(exitCode());
     }
     return result;
@@ -107,23 +108,33 @@ bool Cmd::execute(const QString &cmd, const QStringList &args, QString *output, 
         qDebug() << cmd << args;
     }
 
+    bool failedToStart = false;
     QEventLoop loop;
+    connect(this, &QProcess::errorOccurred, &loop, [&](QProcess::ProcessError err) {
+        if (err == QProcess::FailedToStart) {
+            failedToStart = true;
+            outBuffer = errorString();
+            loop.quit();
+        }
+    });
     connect(this, &Cmd::done, &loop, &QEventLoop::quit);
 
     start(cmd, args);
-    if (input && !input->isEmpty()) {
-        write(*input);
+    if (!failedToStart) {
+        if (input && !input->isEmpty()) {
+            write(*input);
+        }
+        if (!keepInputOpen) {
+            closeWriteChannel();
+        }
+        loop.exec();
     }
-    if (!keepInputOpen) {
-        closeWriteChannel();
-    }
-    loop.exec();
 
     if (output) {
         *output = outBuffer.trimmed();
     }
 
-    return (exitStatus() == QProcess::NormalExit && exitCode() == 0);
+    return !failedToStart && exitStatus() == QProcess::NormalExit && exitCode() == 0;
 }
 
 bool Cmd::procAsRoot(const QString &cmd, const QStringList &args, QString *output, const QByteArray *input,
