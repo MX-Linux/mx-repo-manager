@@ -37,7 +37,7 @@ cleanup_build_artifacts() {
     rm -f debian/*.debhelper.log debian/*.substvars debian/files
     rm -rf debian/.debhelper/ debian/mx-repo-manager/ obj-*/
     rm -f translations/*.qm
-    rm -f ../*.buildinfo 2>/dev/null || true
+    rm -f -- ../mx-repo-manager_*.buildinfo
 }
 
 # Parse command line arguments
@@ -83,11 +83,11 @@ if [ "$DEBIAN_BUILD" = true ]; then
 
     echo "Creating debs directory and moving debian artifacts..."
     mkdir -p debs
-    mv ../*.deb debs/ 2>/dev/null || true
-    mv ../*.changes debs/ 2>/dev/null || true  
-    mv ../*.dsc debs/ 2>/dev/null || true
-    mv ../*.tar.* debs/ 2>/dev/null || true
-    mv ../*.buildinfo debs/ 2>/dev/null || true
+    for artifact in ../mx-repo-manager_*.{deb,changes,dsc,tar.*,buildinfo}; do
+        if [[ -f "$artifact" ]]; then
+            mv -- "$artifact" debs/
+        fi
+    done
 
     echo "Cleaning build directory and debian artifacts..."
     cleanup_build_artifacts
