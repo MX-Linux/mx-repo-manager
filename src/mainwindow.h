@@ -26,6 +26,7 @@
 #include <QDir>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QMap>
 #include <QNetworkAccessManager>
 #include <QProgressDialog>
 #include <QSettings>
@@ -71,7 +72,11 @@ private:
     Ui::MainWindow *ui;
     Cmd *shell;
     QHash<QString, QIcon> flags;
-    QList<QStringList> queued_changes;
+    struct EntryChange {
+        QString original;
+        QString replacement;
+    };
+    QMap<QString, QMap<qsizetype, EntryChange>> queued_changes;
     QProgressBar *bar {};
     QProgressDialog *progress {};
     QPushButton *progCancel {};
@@ -91,7 +96,6 @@ private:
     static QFileInfoList listAptFiles();
     static QIcon getFlag(QString country);
     static QString getDebianVerName(int ver);
-    static QVector<QPair<QString, bool>> loadAptFile(const QString &file);
     static bool checkRepo(const QString &repo);
     static bool isValidRepositoryUrl(const QString &url);
     static bool repoEntryMatchesHost(const QString &repoLine, const QString &host);

@@ -110,6 +110,10 @@ void MainWindow::restoreWindowGeometry()
 
 void MainWindow::refresh(bool force)
 {
+    if (!queued_changes.isEmpty()) {
+        queued_changes.clear();
+        QMessageBox::information(this, tr("Sources reloaded"), tr("Reloading the sources discarded pending checkbox changes."));
+    }
     getCurrentRepo(force);
     displayMXRepos(repos, {});
     displayAllRepos(listAptFiles());
@@ -517,6 +521,63 @@ void MainWindow::displayMXRepos(const QStringList &repos, const QString &filter)
     }
 }
 
+namespace
+{
+struct AptEntry {
+    qsizetype line;
+    qsizetype offset;
+    QString text;
+    bool enabled;
+};
+
+const QRegularExpression legacyEntry(R"(^[ \t]*#?[ \t]*deb[ \t]+)");
+
+QList<AptEntry> aptEntries(const QString &content, bool deb822)
+{
+    QList<AptEntry> entries;
+    qsizetype pos = 0, lineNumber = 0;
+    qsizetype stanzaStart = -1, stanzaLine = 0, stanzaEnd = 0;
+    const auto finishStanza = [&] {
+        if (stanzaStart >= 0) {
+            QString text = content.mid(stanzaStart, stanzaEnd - stanzaStart);
+            static const QRegularExpression disabled(R"(Enabled:\s*no)", QRegularExpression::CaseInsensitiveOption);
+            entries.append({stanzaLine, stanzaStart, text, !text.contains(disabled)});
+            stanzaStart = -1;
+        }
+    };
+    while (pos < content.size()) {
+        qsizetype newline = content.indexOf('\n', pos);
+        if (newline < 0) {
+            newline = content.size();
+        }
+        qsizetype end = newline;
+        if (end > pos && content.at(end - 1) == '\r') {
+            --end;
+        }
+        const QString line = content.mid(pos, end - pos);
+        if (deb822) {
+            if (line.trimmed().isEmpty()) {
+                finishStanza();
+            } else {
+                if (stanzaStart < 0) {
+                    stanzaStart = pos;
+                    stanzaLine = lineNumber;
+                }
+                stanzaEnd = end;
+            }
+        } else if (legacyEntry.match(line).hasMatch()) {
+            entries.append({lineNumber, pos, line, !line.trimmed().startsWith('#')});
+        }
+        pos = newline + 1;
+        ++lineNumber;
+    }
+    finishStanza();
+    return entries;
+}
+
+enum EntryRole { SourcePath = Qt::UserRole, SourceLine, OriginalText, OriginallyEnabled };
+} // namespace
+
 void MainWindow::displayAllRepos(const QFileInfoList &apt_files)
 {
     ui->treeWidget->clear();
@@ -530,8 +591,11 @@ void MainWindow::displayAllRepos(const QFileInfoList &apt_files)
 
     auto processEntries = [](QTreeWidgetItem *parentItem, const auto &entries) {
         for (const auto &item : entries) {
-            auto *childItem = new QTreeWidgetItem(parentItem, {QString(), item.first});
-            childItem->setCheckState(1, item.second ? Qt::Checked : Qt::Unchecked);
+            auto *childItem = new QTreeWidgetItem(parentItem, {QString(), item.text});
+            childItem->setData(1, SourceLine, item.line);
+            childItem->setData(1, OriginalText, item.text);
+            childItem->setData(1, OriginallyEnabled, item.enabled);
+            childItem->setCheckState(1, item.enabled ? Qt::Checked : Qt::Unchecked);
         }
     };
 
@@ -549,7 +613,16 @@ void MainWindow::displayAllRepos(const QFileInfoList &apt_files)
             topLevelItemDeb->setForeground(0, QBrush(Qt::darkGreen));
         }
 
-        auto entries = loadAptFile(file);
+        topLevelItem->setData(0, SourcePath, file);
+        if (topLevelItemDeb) {
+            topLevelItemDeb->setData(0, SourcePath, file);
+        }
+        QFile source(file);
+        if (!source.open(QIODevice::ReadOnly)) {
+            qWarning() << "Could not read" << file << source.errorString();
+            continue;
+        }
+        const auto entries = aptEntries(QString::fromUtf8(source.readAll()), file.endsWith(".sources"));
         processEntries(topLevelItem, entries);
         if (topLevelItemDeb) {
             processEntries(topLevelItemDeb, entries);
@@ -563,52 +636,6 @@ void MainWindow::displayAllRepos(const QFileInfoList &apt_files)
         treeWidget->expandAll();
         treeWidget->blockSignals(false);
     }
-}
-
-QVector<QPair<QString, bool>> MainWindow::loadAptFile(const QString &file)
-{
-    QFile aptFile(file);
-    if (!aptFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Could not open file: " << file << " - " << aptFile.errorString();
-        return {};
-    }
-
-    QVector<QPair<QString, bool>> entries;
-    QTextStream in(&aptFile);
-    bool isSources = QFileInfo(file).suffix() == "sources";
-    if (isSources) {
-        QString block;
-        QRegularExpression enabledRegex("Enabled:\\s*no", QRegularExpression::CaseInsensitiveOption);
-
-        auto processBlock = [&entries, &enabledRegex](const QString &block) {
-            if (!block.isEmpty()) {
-                bool blockEnabled = !block.contains(enabledRegex);
-                entries.append({block.trimmed(), blockEnabled});
-            }
-        };
-
-        while (!in.atEnd()) {
-            QString line = in.readLine();
-            if (line.trimmed().isEmpty()) {
-                processBlock(block);
-                block.clear();
-            } else {
-                block.append(line + "\n");
-            }
-        }
-        processBlock(block); // Process final block
-    } else {
-        QRegularExpression re(R"(^\s*(?:#)?\s*deb\s+)");
-        while (!in.atEnd()) {
-            QString line = in.readLine().trimmed();
-            if (re.match(line).hasMatch()) {
-                bool enabled = !line.startsWith('#');
-                entries.append({line, enabled});
-            }
-        }
-    }
-
-    return entries;
 }
 
 void MainWindow::cancelOperation()
@@ -856,50 +883,43 @@ QFileInfoList MainWindow::listAptFiles()
 void MainWindow::pushOk_clicked()
 {
     bool appliedChanges = false;
-    bool anyFailures = false;
-    if (!queued_changes.isEmpty()) {
-        for (const QStringList &changes : std::as_const(queued_changes)) {
-            const QString &text = changes.at(0);
-            const QString &new_text = changes.at(1);
-            const QString &file_name = changes.at(2);
-
-            QFile file(file_name);
-            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                qWarning() << "Could not open file:" << file_name;
-                anyFailures = true;
-                continue;
-            }
-
-            QString content;
-            QTextStream in(&file);
-            content = in.readAll();
-            file.close();
-
-            QString updatedContent = content;
-            updatedContent.replace(text, new_text);
-
-            if (updatedContent == content) {
-                continue;
-            }
-
-            if (shell->installAsRoot(file_name, updatedContent.toUtf8())) {
-                appliedChanges = true;
-            } else {
-                qWarning() << "Failed to apply change to" << file_name;
-                anyFailures = true;
+    QStringList failedFiles;
+    for (auto changes = queued_changes.cbegin(); changes != queued_changes.cend(); ++changes) {
+        QFile file(changes.key());
+        if (!file.open(QIODevice::ReadOnly)) {
+            failedFiles << file.fileName();
+            continue;
+        }
+        const QByteArray bytes = file.readAll();
+        QString content = QString::fromUtf8(bytes);
+        if (file.error() != QFileDevice::NoError || content.toUtf8() != bytes) {
+            failedFiles << file.fileName();
+            continue;
+        }
+        const auto entries = aptEntries(content, file.fileName().endsWith(".sources"));
+        qsizetype matched = 0;
+        for (auto it = entries.crbegin(); it != entries.crend(); ++it) {
+            const auto edit = changes->constFind(it->line);
+            if (edit != changes->cend() && it->text == edit->original) {
+                content.replace(it->offset, it->text.size(), edit->replacement);
+                ++matched;
             }
         }
-        queued_changes.clear();
+        if (matched != changes->size() || !shell->installAsRoot(file.fileName(), content.toUtf8())) {
+            failedFiles << file.fileName();
+        } else {
+            appliedChanges = true;
+        }
     }
+    queued_changes.clear();
     if (appliedChanges) {
         sources_changed = true;
     }
     setSelected();
     refresh();
-    if (anyFailures) {
+    if (!failedFiles.isEmpty()) {
         QMessageBox::warning(this, tr("Some Changes Not Applied"),
-                             tr("One or more repository changes could not be applied. Please check "
-                                "the affected sources manually."));
+                             tr("These source files changed on disk or could not be written:\n%1").arg(failedFiles.join('\n')));
     }
 }
 
@@ -940,12 +960,12 @@ void MainWindow::treeWidget_itemChanged(QTreeWidgetItem *item, int column)
     ui->treeWidget->blockSignals(true);
     ui->treeWidgetDeb->blockSignals(true);
 
-    const QString text = item->text(column);
-    const QString file_name = item->parent()->text(0);
-    const QString file_path
-        = (file_name == "sources.list") ? "/etc/apt/" + file_name : "/etc/apt/sources.list.d/" + file_name;
+    const QString text = item->data(column, OriginalText).toString();
+    const QString filePath = item->parent()->data(0, SourcePath).toString();
+    const qsizetype line = item->data(column, SourceLine).toLongLong();
+    const bool enabled = item->checkState(column) == Qt::Checked;
+    const bool changed = enabled != item->data(column, OriginallyEnabled).toBool();
     QString new_text = text;
-    QStringList changes;
 
     if (text.contains("/mx/testrepo/") && item->checkState(column) == Qt::Checked) {
         QMessageBox::warning(this, tr("Warning"),
@@ -956,7 +976,7 @@ void MainWindow::treeWidget_itemChanged(QTreeWidgetItem *item, int column)
                                       "Installer."));
     }
 
-    if (file_name.endsWith(".sources")) {
+    if (filePath.endsWith(".sources")) {
         if (item->checkState(column) == Qt::Checked) {
             new_text.replace(QRegularExpression("Enabled:\\s*no", QRegularExpression::CaseInsensitiveOption),
                              "Enabled: yes");
@@ -976,9 +996,30 @@ void MainWindow::treeWidget_itemChanged(QTreeWidgetItem *item, int column)
         }
     }
 
+    if (changed) {
+        queued_changes[filePath].insert(line, {text, new_text});
+    } else {
+        new_text = text;
+        auto file = queued_changes.find(filePath);
+        if (file != queued_changes.end()) {
+            file->remove(line);
+            if (file->isEmpty()) {
+                queued_changes.erase(file);
+            }
+        }
+    }
     item->setText(column, new_text);
-    changes << text << new_text << file_path;
-    queued_changes << changes;
+    QTreeWidget *other = item->treeWidget() == ui->treeWidget ? ui->treeWidgetDeb : ui->treeWidget;
+    for (int i = 0; i < other->topLevelItemCount(); ++i) {
+        auto *parent = other->topLevelItem(i);
+        if (parent->data(0, SourcePath).toString() == filePath) {
+            auto *twin = parent->child(item->parent()->indexOfChild(item));
+            twin->setText(column, new_text);
+            twin->setCheckState(column, item->checkState(column));
+            break;
+        }
+    }
+    ui->pushOk->setEnabled(radioSelectionChanged || !queued_changes.isEmpty());
 
     ui->treeWidgetDeb->blockSignals(false);
     ui->treeWidget->blockSignals(false);
