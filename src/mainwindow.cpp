@@ -1445,11 +1445,11 @@ bool MainWindow::checkRepo(const QString &repo)
     setupNetworkProxy(manager, QUrl(repo));
 
     request.setUrl(QUrl(repo));
+    manager.setTransferTimeout(5000);
     QNetworkReply *reply = manager.head(request);
     QEventLoop loop;
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     connect(reply, &QNetworkReply::errorOccurred, &loop, &QEventLoop::quit);
-    manager.setTransferTimeout(5000);
     loop.exec();
     reply->disconnect();
 
