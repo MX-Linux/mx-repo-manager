@@ -74,14 +74,6 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    if (sources_changed) {
-        progressLabel->setText(tr("Updating package sources..."));
-        progress->show();
-        QApplication::processEvents();
-
-        shell->procAsRoot("apt-get", {"update"}, nullptr, nullptr, QuietMode::Yes);
-    }
-
     delete ui;
 }
 
@@ -774,10 +766,30 @@ void MainWindow::centerWindow()
     move(x, y);
 }
 
-void MainWindow::closeEvent([[maybe_unused]] QCloseEvent *event)
+void MainWindow::done(int result)
 {
+    // Both Escape and QDialog's window-close handler call reject(), which finishes here.
+    if (changingSources) {
+        return;
+    }
+    const QScopedValueRollback guard(changingSources, true);
     settings.setValue("geometry", saveGeometry());
-    event->accept();
+    if (sources_changed) {
+        QString output;
+        progressLabel->setText(tr("Updating package sources..."));
+        progress->show();
+        const bool updated = shell->procAsRoot("apt-get", {"update"}, &output, nullptr, QuietMode::Yes);
+        progress->hide();
+        if (!updated) {
+            QMessageBox warning(QMessageBox::Warning, tr("Package indexes not updated"),
+                                tr("The source changes were saved. Updating the package indexes failed."),
+                                QMessageBox::Ok, this);
+            warning.setDetailedText(output);
+            warning.exec();
+        }
+        sources_changed = false;
+    }
+    QDialog::done(result);
 }
 
 void MainWindow::setSelected()
@@ -990,10 +1002,10 @@ QFileInfoList MainWindow::listAptFiles()
 
 void MainWindow::pushOk_clicked()
 {
-    if (applyingChanges) {
+    if (changingSources) {
         return;
     }
-    const QScopedValueRollback guard(applyingChanges, true);
+    const QScopedValueRollback guard(changingSources, true);
     ui->pushOk->setEnabled(false);
     ui->tabWidget->setEnabled(false);
     const auto pending = std::exchange(queued_changes, {});
@@ -1174,6 +1186,10 @@ QIcon MainWindow::getFlag(QString country)
 // Detect fastest Debian repo
 void MainWindow::pushFastestDebian_clicked()
 {
+    if (changingSources) {
+        return;
+    }
+    const QScopedValueRollback guard(changingSources, true);
     if (!shell->procAsRoot("true", {}, nullptr, nullptr, QuietMode::Yes)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not detect fastest repo."));
         return;
@@ -1218,6 +1234,10 @@ void MainWindow::pushFastestDebian_clicked()
 // Detect and select the fastest MX repo
 void MainWindow::pushFastestMX_clicked()
 {
+    if (changingSources) {
+        return;
+    }
+    const QScopedValueRollback guard(changingSources, true);
     if (!shell->procAsRoot("true", {}, nullptr, nullptr, QuietMode::Yes)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not detect fastest repo."));
         return;
@@ -1262,6 +1282,10 @@ void MainWindow::lineSearch_textChanged(const QString &arg1)
 
 void MainWindow::pushRestoreSources_clicked()
 {
+    if (changingSources) {
+        return;
+    }
+    const QScopedValueRollback guard(changingSources, true);
     // Check if running on antiX/MX
     if (!QFileInfo::exists("/etc/antix-version") && !QFileInfo::exists("/etc/mx-version")) {
         QMessageBox::critical(this, tr("Error"), tr("Can't figure out if this app is running on antiX or MX"));

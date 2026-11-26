@@ -55,7 +55,7 @@ public:
 
 private slots:
     void cancelOperation();
-    void closeEvent([[maybe_unused]] QCloseEvent *event) override;
+    void done(int result) override;
     void procDone();
     void procTime();
     void procStart();
@@ -90,7 +90,7 @@ private:
     QStringList repos;
     QTimer timer;
     bool radioSelectionChanged {false};
-    bool applyingChanges {false};
+    bool changingSources {false};
     bool sources_changed {false};
 
     void readMXRepos();
