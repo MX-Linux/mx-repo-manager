@@ -119,6 +119,113 @@ void MainWindow::refresh(bool force)
     radioSelectionChanged = false;
 }
 
+namespace
+{
+bool hasDebianComponents(const QString &components)
+{
+    static const QStringList standard {"main", "contrib", "non-free", "non-free-firmware"};
+    const auto values = components.simplified().split(' ', Qt::SkipEmptyParts);
+    return !values.isEmpty() && std::all_of(values.cbegin(), values.cend(),
+                                            [](const QString &v) { return standard.contains(v); });
+}
+
+bool isDebianArchive(const QString &uri, const QString &signedBy, const QString &previousMirror, bool dedicatedArchive)
+{
+    const QUrl url(uri);
+    if (!url.isValid() || !QStringList{"http", "https", "ftp"}.contains(url.scheme())) {
+        return false;
+    }
+    const bool knownMirror = !previousMirror.isEmpty()
+        && url.matches(QUrl(previousMirror), QUrl::StripTrailingSlash);
+    const bool archivePath = url.path(QUrl::FullyEncoded).endsWith("/debian")
+        || url.path(QUrl::FullyEncoded).endsWith("/debian/");
+    if (!archivePath && !knownMirror) {
+        return false;
+    }
+    if (!signedBy.isEmpty()) {
+        static const QRegularExpression archiveKey(
+            R"(^/usr/share/keyrings/debian-archive-(?:keyring|[a-z]+-(?:automatic|stable|security-automatic))\.(?:gpg|pgp)$)");
+        return archiveKey.match(signedBy).hasMatch();
+    }
+    return dedicatedArchive || knownMirror || url.host() == "deb.debian.org" || url.host() == "ftp.debian.org"
+        || (url.host().startsWith("ftp.") && url.host().endsWith(".debian.org"));
+}
+
+// Work on physical lines so that whitespace, comments, and continuation lines survive a URI edit.
+QByteArray switchDebianMirror(const QByteArray &original, bool deb822, const QString &mirror,
+                              const QString &previousMirror, bool dedicatedFile)
+{
+    QStringList lines = QString::fromLatin1(original).split('\n');
+    static const QRegularExpression legacy(
+        R"(^[ \t]*#?[ \t]*deb(?:-src)?[ \t]+(?:\[([^\]]*)\][ \t]+)?(\S+)[ \t]+([^\s#]+))");
+    static const QRegularExpression signingOption(R"((?:^|\s)signed-by=(\S+))",
+                                                  QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression token(R"(\S+)");
+    auto replacement = [&](const QString &uri) {
+        return uri.endsWith('/') ? mirror + '/' : mirror;
+    };
+    if (!deb822) {
+        for (QString &line : lines) {
+            const auto entry = legacy.match(line);
+            if (!entry.hasMatch() || entry.captured(3).contains("security", Qt::CaseInsensitive)) {
+                continue;
+            }
+            const QString key = signingOption.match(entry.captured(1)).captured(1);
+            const QString components = line.mid(entry.capturedEnd(3)).section('#', 0, 0);
+            if (isDebianArchive(entry.captured(2), key, previousMirror, dedicatedFile && hasDebianComponents(components))) {
+                line.replace(entry.capturedStart(2), entry.capturedLength(2), replacement(entry.captured(2)));
+            }
+        }
+    } else {
+        for (qsizetype start = 0; start < lines.size();) {
+            qsizetype end = start;
+            QString field, key, suites, components;
+            QList<qsizetype> uriLines;
+            while (end < lines.size() && !lines.at(end).trimmed().isEmpty()) {
+                const QString &line = lines.at(end++);
+                if (line.startsWith('#')) {
+                    continue;
+                }
+                qsizetype offset = 0;
+                if (!line.front().isSpace()) {
+                    offset = line.indexOf(':') + 1;
+                    field = offset ? line.left(offset - 1).toLower() : QString();
+                }
+                if (field == "signed-by") {
+                    key += " " + line.mid(offset).trimmed();
+                } else if (field == "suites") {
+                    suites += " " + line.mid(offset);
+                } else if (field == "components") {
+                    components += " " + line.mid(offset);
+                } else if (field == "uris") {
+                    uriLines.append(end - 1);
+                }
+            }
+            if (!suites.contains("security", Qt::CaseInsensitive)) {
+                for (qsizetype index : uriLines) {
+                    QString &line = lines[index];
+                    const QString source = line;
+                    const qsizetype offset = source.front().isSpace() ? 0 : source.indexOf(':') + 1;
+                    auto urls = token.globalMatch(source, offset);
+                    qsizetype delta = 0;
+                    while (urls.hasNext()) {
+                        const auto match = urls.next();
+                        if (isDebianArchive(match.captured(), key.trimmed(), previousMirror,
+                                            dedicatedFile && hasDebianComponents(components))) {
+                            const QString value = replacement(match.captured());
+                            line.replace(match.capturedStart() + delta, match.capturedLength(), value);
+                            delta += value.size() - match.capturedLength();
+                        }
+                    }
+                }
+            }
+            start = end + 1;
+        }
+    }
+    return lines.join('\n').toLatin1();
+}
+} // namespace
+
 void MainWindow::replaceDebianRepos(const QString &url)
 {
     if (!isValidRepositoryUrl(url)) {
@@ -148,32 +255,21 @@ void MainWindow::replaceDebianRepos(const QString &url)
         }
 
         QFile file(filePath);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (!file.open(QIODevice::ReadOnly)) {
             qWarning() << "Could not open file:" << file.fileName() << file.errorString();
             continue;
         }
 
-        QString content;
-        QTextStream in(&file);
-        QRegularExpression re {R"(((?:https?|ftp)://\S*?/debian))"};
-        bool fileChanged = false;
-
-        while (!in.atEnd()) {
-            QString line = in.readLine().trimmed();
-            // Don't replace security line since it might not be available on the mirror
-            if (!line.contains("security")) {
-                QString updatedLine = line;
-                updatedLine.replace(re, trimmedUrl);
-                if (updatedLine != line) {
-                    fileChanged = true;
-                    line = updatedLine;
-                }
-            }
-            content.append(line + '\n');
+        const QByteArray original = file.readAll();
+        if (file.error() != QFileDevice::NoError) {
+            failed = true;
+            break;
         }
+        const QByteArray content = switchDebianMirror(original, filePath.endsWith(".sources"),
+            QString::fromLatin1(QUrl(trimmedUrl).toEncoded()), settings.value("lastDebianMirror").toString(),
+            filePath != "/etc/apt/sources.list");
         file.close();
-
-        if (!fileChanged) {
+        if (content == original) {
             continue;
         }
 
@@ -193,7 +289,7 @@ void MainWindow::replaceDebianRepos(const QString &url)
         changedFiles << filePath;
         changedFilesBackups << backupFilePath;
 
-        if (!writeUpdatedFile(filePath, content)) {
+        if (!Cmd().installAsRoot(filePath, content)) {
             failed = true;
             break;
         }
@@ -220,12 +316,13 @@ void MainWindow::replaceDebianRepos(const QString &url)
     }
 
     if (anyChange) {
+        settings.setValue("lastDebianMirror", trimmedUrl);
         sources_changed = true;
         QMessageBox::information(this, tr("Success"),
                                  tr("Your new selection will take effect the next time sources are updated."));
     } else {
         QMessageBox::information(this, tr("No Changes"),
-                                 tr("The selected repository is already configured."));
+                                 tr("No matching Debian archive URI needed updating."));
     }
 }
 
