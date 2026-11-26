@@ -575,6 +575,49 @@ QList<AptEntry> aptEntries(const QString &content, bool deb822)
     return entries;
 }
 
+bool enableAhsSource(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    QString content = QString::fromUtf8(file.readAll());
+    if (file.error() != QFileDevice::NoError) {
+        return false;
+    }
+    file.close();
+
+    const bool deb822 = path.endsWith(".sources");
+    const auto entries = aptEntries(content, deb822);
+    bool found = false;
+    for (auto it = entries.crbegin(); it != entries.crend(); ++it) {
+        QString text = it->text;
+        if (deb822) {
+            static const QRegularExpression components(R"(^Components:[ \t]*(.*)$)",
+                QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
+            if (!components.match(text).captured(1).simplified().split(' ').contains("ahs")) {
+                continue;
+            }
+            static const QRegularExpression enabled(R"(^Enabled:[^\r\n]*)",
+                QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
+            text.replace(enabled, "Enabled: yes");
+        } else {
+            static const QRegularExpression source(R"(^[ \t]*#?[ \t]*deb\s+(?:\[[^\]]*\]\s+)?\S+\s+\S+\s+([^#]+))");
+            if (!source.match(text).captured(1).simplified().split(' ').contains("ahs")) {
+                continue;
+            }
+            text.remove(QRegularExpression(R"(^[ \t]*#[ \t]*)"));
+        }
+        found = true;
+        content.replace(it->offset, it->text.size(), text);
+    }
+    if (!found || !file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+    const QByteArray bytes = content.toUtf8();
+    return file.write(bytes) == bytes.size() && file.flush();
+}
+
 enum EntryRole { SourcePath = Qt::UserRole, SourceLine, OriginalText, OriginallyEnabled };
 } // namespace
 
@@ -1203,30 +1246,15 @@ void MainWindow::pushRestoreSources_clicked()
     QString mx_list = QString("%1/mx-sources-mx%2/mx.list").arg(tmpdir.path(), QString::number(mx_version));
     QString mx_sources = QString("%1/mx-sources-mx%2/mx.sources").arg(tmpdir.path(), QString::number(mx_version));
 
-    auto enableAHS = [&](const QString &file) {
-        if (QFile::exists(file)) {
-            if (file.endsWith(".list")) {
-                cmd = QString("sed -i -r 's/^[[:space:]]*#[[:space:]#]*(deb.*[[:space:]]ahs)[[:space:]]*/\\1/' %1")
-                          .arg(Cmd::shellQuote(file));
-            } else {
-                cmd = QString("sed -i -r "
-                              "'/Components:.*ahs/!s/^[[:space:]]*Components:[[:space:]]*\\[([^]]*?)\\][[:space:]]*$/"
-                              "Components: [\\1 ahs]/' %1")
-                          .arg(Cmd::shellQuote(file));
-            }
-            shell->run(cmd);
-        }
-    };
-
-    QString &file = QFile::exists(mx_list) ? mx_list : mx_sources;
-
-    if (enable_ahs) {
-        enableAHS(file);
-    } else if (mx_version >= 19 && shell->getOut("uname", {"-m"}, QuietMode::Yes).trimmed() == "x86_64" && !enable_mx) {
-        if (QMessageBox::Yes
-            == QMessageBox::question(this, tr("Enabling AHS"), tr("Do you use AHS (Advanced Hardware Stack) repo?"))) {
-            enableAHS(file);
-        }
+    const QString file = QFile::exists(mx_list) ? mx_list : mx_sources;
+    if (!enable_ahs && mx_version >= 19 && !enable_mx
+        && shell->getOut("uname", {"-m"}, QuietMode::Yes).trimmed() == "x86_64") {
+        enable_ahs = QMessageBox::Yes == QMessageBox::question(
+            this, tr("Enabling AHS"), tr("Do you use AHS (Advanced Hardware Stack) repo?"));
+    }
+    if (enable_ahs && !enableAhsSource(file)) {
+        QMessageBox::critical(this, tr("Error"), tr("Could not enable AHS in the downloaded MX sources."));
+        return;
     }
 
     // Move the sources list files from the temporary directory to /etc/apt/sources.list.d/
