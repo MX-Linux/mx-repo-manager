@@ -86,6 +86,7 @@ private:
     QStringList repos;
     QTimer timer;
     bool radioSelectionChanged {false};
+    bool applyingChanges {false};
     bool sources_changed {false};
 
     QStringList readMXRepos();

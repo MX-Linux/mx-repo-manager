@@ -34,6 +34,8 @@
 #include <QProgressBar>
 #include <QRadioButton>
 #include <QScreen>
+#include <QScopedValueRollback>
+#include <utility>
 #include <QTemporaryDir>
 #include <QTextEdit>
 #include <QStringList>
@@ -925,9 +927,17 @@ QFileInfoList MainWindow::listAptFiles()
 
 void MainWindow::pushOk_clicked()
 {
+    if (applyingChanges) {
+        return;
+    }
+    const QScopedValueRollback guard(applyingChanges, true);
+    ui->pushOk->setEnabled(false);
+    ui->tabWidget->setEnabled(false);
+    const auto pending = std::exchange(queued_changes, {});
+
     bool appliedChanges = false;
     QStringList failedFiles;
-    for (auto changes = queued_changes.cbegin(); changes != queued_changes.cend(); ++changes) {
+    for (auto changes = pending.cbegin(); changes != pending.cend(); ++changes) {
         QFile file(changes.key());
         if (!file.open(QIODevice::ReadOnly)) {
             failedFiles << file.fileName();
@@ -954,12 +964,12 @@ void MainWindow::pushOk_clicked()
             appliedChanges = true;
         }
     }
-    queued_changes.clear();
     if (appliedChanges) {
         sources_changed = true;
     }
     setSelected();
     refresh();
+    ui->tabWidget->setEnabled(true);
     if (!failedFiles.isEmpty()) {
         QMessageBox::warning(this, tr("Some Changes Not Applied"),
                              tr("These source files changed on disk or could not be written:\n%1").arg(failedFiles.join('\n')));
