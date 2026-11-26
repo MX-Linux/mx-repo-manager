@@ -26,6 +26,7 @@
 #include <QHash>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 
 #include <cerrno>
@@ -270,10 +271,7 @@ bool cancelRequested()
     return result.exitStatus == QProcess::NormalExit ? result.exitCode : 1;
 }
 
-// Runs netselect-apt with an output destination the helper creates and owns itself, never one
-// supplied by the caller: a freshly mkstemp()-style created file can't be a pre-planted symlink,
-// unlike a caller-supplied "-o" path that could be swapped for one between validation and use.
-// The resulting content is relayed back over our own stdout instead.
+// netselect-apt backs up pre-existing output. Give it an unused name in a private directory.
 [[nodiscard]] int handleNetselectApt(const QStringList &args, bool monitorCancel)
 {
     if (args.size() > 1) {
@@ -294,14 +292,12 @@ bool cancelRequested()
         return 1;
     }
 
-    QTemporaryFile outputFile;
-    outputFile.setAutoRemove(false);
-    if (!outputFile.open()) {
-        printError(QStringLiteral("Could not create a temporary output file"));
+    QTemporaryDir directory;
+    if (!directory.isValid()) {
+        printError(QStringLiteral("Could not create a temporary output directory"));
         return 1;
     }
-    const QString outputPath = outputFile.fileName();
-    outputFile.close();
+    const QString outputPath = directory.filePath("sources.list");
 
     QStringList fullArgs = args;
     fullArgs << "-o" << outputPath;
@@ -309,10 +305,17 @@ bool cancelRequested()
     ProcessResult result = runProcess(program, fullArgs, monitorCancel);
     if (result.started && result.exitStatus == QProcess::NormalExit && result.exitCode == 0) {
         QFile output(outputPath);
-        result.standardOutput = output.open(QIODevice::ReadOnly) ? output.readAll() : QByteArray();
+        if (!output.open(QIODevice::ReadOnly)) {
+            printError(output.errorString());
+            return 1;
+        }
+        result.standardOutput = output.readAll();
+        if (output.error() != QFileDevice::NoError) {
+            printError(output.errorString());
+            return 1;
+        }
         result.standardError.clear();
     }
-    QFile::remove(outputPath);
     return relayResult(result);
 }
 
