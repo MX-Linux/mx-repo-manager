@@ -390,47 +390,36 @@ bool cancelRequested()
         printError(QString("Refusing to install to disallowed path: %1").arg(targetPath));
         return 1;
     }
-    // Every legitimate caller except the restore flow (which may recreate a file the user
-    // deleted) only ever replaces a file that already exists; without this, any *.list/*.sources
-    // name under sources.list.d would be accepted, letting a caller plant a brand-new,
-    // attacker-controlled APT source file that was never one of the app's known files.
-    if (!allowCreate && !QFileInfo::exists(targetPath)) {
-        printError(QString("Refusing to create new file: %1").arg(targetPath));
-        return 1;
-    }
-
-    const QString tmpPath = targetPath + QStringLiteral(".mxrm-new");
-    {
-        QFile tmpFile(tmpPath);
-        if (!tmpFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            printError(QString("Could not create %1: %2").arg(tmpPath, tmpFile.errorString()));
+    const QByteArray target = QFile::encodeName(targetPath);
+    struct stat metadata {};
+    if (::stat(target.constData(), &metadata) != 0) {
+        if (errno != ENOENT || !allowCreate) {
+            const int error = errno;
+            printError(QString("Could not inspect %1: %2").arg(targetPath, QString::fromLocal8Bit(std::strerror(error))));
             return 1;
         }
-        if (tmpFile.write(content) != content.size()) {
-            printError(QString("Could not write %1: %2").arg(tmpPath, tmpFile.errorString()));
-            tmpFile.close();
-            QFile::remove(tmpPath);
-            return 1;
-        }
-    } // flush + close via scope exit
-
-    const QByteArray tmpPathLocal = QFile::encodeName(tmpPath);
-    if (::chmod(tmpPathLocal.constData(), 0644) != 0 || ::chown(tmpPathLocal.constData(), 0, 0) != 0) {
-        const int savedErrno = errno;
-        printError(QString("Could not set ownership/permissions on %1: %2")
-                       .arg(tmpPath, QString::fromLocal8Bit(std::strerror(savedErrno))));
-        QFile::remove(tmpPath);
+        metadata.st_uid = 0;
+        metadata.st_gid = 0;
+        metadata.st_mode = 0644;
+    } else if (!S_ISREG(metadata.st_mode)) {
+        printError(QString("Not a regular source file: %1").arg(targetPath));
         return 1;
     }
 
-    const QByteArray targetPathLocal = QFile::encodeName(targetPath);
-    if (std::rename(tmpPathLocal.constData(), targetPathLocal.constData()) != 0) {
-        const int savedErrno = errno;
-        printError(
-            QString("Could not install %1: %2").arg(targetPath, QString::fromLocal8Bit(std::strerror(savedErrno))));
-        QFile::remove(tmpPath);
+    QTemporaryFile staged(targetPath + ".XXXXXX");
+    if (!staged.open() || staged.write(content) != content.size() || !staged.flush()) {
+        printError(QString("Could not stage %1: %2").arg(targetPath, staged.errorString()));
         return 1;
     }
+    const QByteArray temporary = QFile::encodeName(staged.fileName());
+    const int fd = staged.handle();
+    if (::fchown(fd, metadata.st_uid, metadata.st_gid) != 0 || ::fchmod(fd, metadata.st_mode & 0777) != 0
+        || ::fsync(fd) != 0 || ::rename(temporary.constData(), target.constData()) != 0) {
+        const int error = errno;
+        printError(QString("Could not install %1: %2").arg(targetPath, QString::fromLocal8Bit(std::strerror(error))));
+        return 1;
+    }
+    staged.setAutoRemove(false);
     return 0;
 }
 } // namespace
