@@ -482,6 +482,69 @@ struct AptEntry {
 
 const QRegularExpression legacyEntry(R"(^[ \t]*#?[ \t]*deb[ \t]+)");
 
+QString fieldValue(const QString &stanza, const QString &name)
+{
+    QStringList values;
+    bool inField = false;
+    for (const QString &line : stanza.split('\n')) {
+        if (line.startsWith('#') || line.isEmpty()) {
+            continue;
+        }
+        if (!line.front().isSpace()) {
+            inField = line.startsWith(name + ':', Qt::CaseInsensitive);
+            if (inField) {
+                values << line.mid(name.size() + 1);
+            }
+        } else if (inField) {
+            values << line;
+        }
+    }
+    return values.join(' ').simplified();
+}
+
+bool stanzaEnabled(const QString &stanza)
+{
+    const QString value = fieldValue(stanza, "Enabled").toLower();
+    bool numeric = false;
+    const auto number = value.toLongLong(&numeric, 0);
+    if (numeric) {
+        return number != 0;
+    }
+    static const QStringList disabled {"false", "no", "off", "disable", "without"};
+    return !disabled.contains(value);
+}
+
+QString setStanzaEnabled(const QString &text, bool enabled)
+{
+    QStringList result;
+    const QString field = enabled ? "Enabled: yes" : "Enabled: no";
+    bool found = false, inEnabled = false;
+    for (const auto &line : text.split('\n')) {
+        if (line.startsWith('#')) {
+            result << line;
+            continue;
+        }
+        if (!line.isEmpty() && line.front().isSpace() && inEnabled) {
+            continue;
+        }
+        inEnabled = line.startsWith("Enabled:", Qt::CaseInsensitive);
+        if (inEnabled) {
+            found = true;
+            result << (line.endsWith('\r') ? field + '\r' : field);
+        } else {
+            result << line;
+        }
+    }
+    QString updated = result.join('\n');
+    if (updated.endsWith('\r') && !text.endsWith('\r')) {
+        updated.chop(1);
+    }
+    if (!found && !enabled) {
+        updated += (text.contains("\r\n") ? "\r\n" : "\n") + field;
+    }
+    return updated;
+}
+
 QList<AptEntry> aptEntries(const QString &content, bool deb822)
 {
     QList<AptEntry> entries;
@@ -490,8 +553,7 @@ QList<AptEntry> aptEntries(const QString &content, bool deb822)
     const auto finishStanza = [&] {
         if (stanzaStart >= 0) {
             QString text = content.mid(stanzaStart, stanzaEnd - stanzaStart);
-            static const QRegularExpression disabled(R"(Enabled:\s*no)", QRegularExpression::CaseInsensitiveOption);
-            entries.append({stanzaLine, stanzaStart, text, !text.contains(disabled)});
+            entries.append({stanzaLine, stanzaStart, text, stanzaEnabled(text)});
             stanzaStart = -1;
         }
     };
@@ -525,33 +587,6 @@ QList<AptEntry> aptEntries(const QString &content, bool deb822)
     return entries;
 }
 
-QString fieldValue(const QString &stanza, const QString &name)
-{
-    QStringList values;
-    bool inField = false;
-    for (const QString &line : stanza.split('\n')) {
-        if (line.startsWith('#') || line.isEmpty()) {
-            continue;
-        }
-        if (!line.front().isSpace()) {
-            inField = line.startsWith(name + ':', Qt::CaseInsensitive);
-            if (inField) {
-                values << line.mid(name.size() + 1);
-            }
-        } else if (inField) {
-            values << line;
-        }
-    }
-    return values.join(' ').simplified();
-}
-
-bool stanzaEnabled(const QString &stanza)
-{
-    const QString value = fieldValue(stanza, "Enabled").toLower();
-    static const QStringList disabled {"0", "false", "no", "off", "disable", "without"};
-    return !disabled.contains(value);
-}
-
 bool enableAhsSource(const QString &path)
 {
     QFile file(path);
@@ -570,14 +605,10 @@ bool enableAhsSource(const QString &path)
     for (auto it = entries.crbegin(); it != entries.crend(); ++it) {
         QString text = it->text;
         if (deb822) {
-            static const QRegularExpression components(R"(^Components:[ \t]*(.*)$)",
-                QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
-            if (!components.match(text).captured(1).simplified().split(' ').contains("ahs")) {
+            if (!fieldValue(text, "Components").split(' ').contains("ahs")) {
                 continue;
             }
-            static const QRegularExpression enabled(R"(^Enabled:[^\r\n]*)",
-                QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
-            text.replace(enabled, "Enabled: yes");
+            text = setStanzaEnabled(text, true);
         } else {
             static const QRegularExpression source(R"(^[ \t]*#?[ \t]*deb\s+(?:\[[^\]]*\]\s+)?\S+\s+\S+\s+([^#]+))");
             if (!source.match(text).captured(1).simplified().split(' ').contains("ahs")) {
@@ -619,7 +650,7 @@ void MainWindow::getCurrentRepo(bool force)
             continue;
         }
         for (const auto &entry : entries) {
-            if (deb822 ? !stanzaEnabled(entry.text) : !entry.enabled) {
+            if (!entry.enabled) {
                 continue;
             }
             static const QRegularExpression legacyUri(R"(^\s*deb\s+(?:\[[^\]]*\]\s+)?(\S+))");
@@ -1056,17 +1087,7 @@ void MainWindow::treeWidget_itemChanged(QTreeWidgetItem *item, int column)
     }
 
     if (filePath.endsWith(".sources")) {
-        if (item->checkState(column) == Qt::Checked) {
-            new_text.replace(QRegularExpression("Enabled:\\s*no", QRegularExpression::CaseInsensitiveOption),
-                             "Enabled: yes");
-        } else {
-            if (!new_text.contains(QRegularExpression("Enabled:", QRegularExpression::CaseInsensitiveOption))) {
-                new_text.append("\nEnabled: no");
-            } else {
-                new_text.replace(QRegularExpression("Enabled:\\s*yes", QRegularExpression::CaseInsensitiveOption),
-                                 "Enabled: no");
-            }
-        }
+        new_text = setStanzaEnabled(text, enabled);
     } else {
         if (item->checkState(column) == Qt::Checked) {
             new_text.remove(QRegularExpression("#\\s*"));
