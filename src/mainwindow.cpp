@@ -968,10 +968,9 @@ QFileInfoList MainWindow::listAptFiles()
     QFile file("/etc/apt/sources.list");
     if (file.exists() && file.size() > 0 && file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QTextStream in(&file);
-        QRegularExpression re(R"(^\s*deb)");
         while (!in.atEnd()) {
             QString line = in.readLine();
-            if (re.match(line).hasMatch()) {
+            if (legacyEntry.match(line).hasMatch()) {
                 list << QFileInfo(file);
                 break;
             }
