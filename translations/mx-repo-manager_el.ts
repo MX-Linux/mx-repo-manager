@@ -32,7 +32,7 @@
     </message>
     <message>
         <location filename="../src/mainwindow.ui" line="32"/>
-        <location filename="../src/mainwindow.cpp" line="881"/>
+        <location filename="../src/mainwindow.cpp" line="888"/>
         <source>Select the APT repository that you want to use:</source>
         <translation>Επιλέξτε το αποθετήριο που θέλετε να χρησιμοποιήσετε:</translation>
     </message>
@@ -123,55 +123,55 @@
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="224"/>
-        <location filename="../src/mainwindow.cpp" line="677"/>
-        <location filename="../src/mainwindow.cpp" line="1144"/>
+        <location filename="../src/mainwindow.cpp" line="684"/>
+        <location filename="../src/mainwindow.cpp" line="1151"/>
         <source>Success</source>
         <translation>Επιτυχία</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="225"/>
-        <location filename="../src/mainwindow.cpp" line="678"/>
-        <location filename="../src/mainwindow.cpp" line="1148"/>
+        <location filename="../src/mainwindow.cpp" line="685"/>
+        <location filename="../src/mainwindow.cpp" line="1155"/>
         <source>Your new selection will take effect the next time sources are updated.</source>
         <translation>Η νέα επιλογή σας θα τεθεί σε ισχύ την επόμενη φορά που θα ενημερωθούν οι πηγές σας.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="227"/>
-        <location filename="../src/mainwindow.cpp" line="685"/>
+        <location filename="../src/mainwindow.cpp" line="692"/>
         <source>No Changes</source>
         <translation>Χωρίς αλλαγές</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="228"/>
-        <location filename="../src/mainwindow.cpp" line="686"/>
+        <location filename="../src/mainwindow.cpp" line="693"/>
         <source>The selected repository is already configured.</source>
         <translation>Το επιλεγμένο αποθετήριο είναι ήδη ρυθμισμένο.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="423"/>
+        <location filename="../src/mainwindow.cpp" line="430"/>
         <source>Lists</source>
         <translation>Κατάλογοι</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="423"/>
+        <location filename="../src/mainwindow.cpp" line="430"/>
         <source>Sources (checked sources are enabled)</source>
         <translation>Πηγές (οι επιλεγμένες πηγές είναι ενεργοποιημένες)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="213"/>
-        <location filename="../src/mainwindow.cpp" line="671"/>
-        <location filename="../src/mainwindow.cpp" line="691"/>
-        <location filename="../src/mainwindow.cpp" line="922"/>
-        <location filename="../src/mainwindow.cpp" line="943"/>
-        <location filename="../src/mainwindow.cpp" line="958"/>
-        <location filename="../src/mainwindow.cpp" line="966"/>
-        <location filename="../src/mainwindow.cpp" line="992"/>
-        <location filename="../src/mainwindow.cpp" line="1005"/>
+        <location filename="../src/mainwindow.cpp" line="678"/>
+        <location filename="../src/mainwindow.cpp" line="698"/>
+        <location filename="../src/mainwindow.cpp" line="929"/>
+        <location filename="../src/mainwindow.cpp" line="950"/>
+        <location filename="../src/mainwindow.cpp" line="965"/>
+        <location filename="../src/mainwindow.cpp" line="973"/>
+        <location filename="../src/mainwindow.cpp" line="999"/>
         <location filename="../src/mainwindow.cpp" line="1012"/>
-        <location filename="../src/mainwindow.cpp" line="1026"/>
-        <location filename="../src/mainwindow.cpp" line="1034"/>
-        <location filename="../src/mainwindow.cpp" line="1090"/>
-        <location filename="../src/mainwindow.cpp" line="1151"/>
+        <location filename="../src/mainwindow.cpp" line="1019"/>
+        <location filename="../src/mainwindow.cpp" line="1033"/>
+        <location filename="../src/mainwindow.cpp" line="1041"/>
+        <location filename="../src/mainwindow.cpp" line="1097"/>
+        <location filename="../src/mainwindow.cpp" line="1158"/>
         <source>Error</source>
         <translation>Σφάλμα</translation>
     </message>
@@ -186,97 +186,97 @@
         <translation>Απέτυχε η ενημέρωση πηγών του αποθετηρίου. Έχουν ακυρωθεί όλες οι αλλαγές.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="671"/>
-        <location filename="../src/mainwindow.cpp" line="691"/>
+        <location filename="../src/mainwindow.cpp" line="678"/>
+        <location filename="../src/mainwindow.cpp" line="698"/>
         <source>Could not change the repo.</source>
         <translation>Δεν ήταν δυνατή η αλλαγή αποθετηρίου.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="715"/>
+        <location filename="../src/mainwindow.cpp" line="722"/>
         <source>Cancel</source>
         <translation>Άκυρο</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="721"/>
+        <location filename="../src/mainwindow.cpp" line="728"/>
         <source>Please wait...</source>
         <translation>Παρακαλώ περιμένετε...</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="795"/>
+        <location filename="../src/mainwindow.cpp" line="802"/>
         <source>Some Changes Not Applied</source>
         <translation>Ορισμένες αλλαγές δεν εφαρμόστηκαν</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="796"/>
+        <location filename="../src/mainwindow.cpp" line="803"/>
         <source>One or more repository changes could not be applied. Please check the affected sources manually.</source>
         <translation>Δεν ήταν δυνατή η εφαρμογή μιας ή περισσότερων αλλαγών αποθετηρίου. Παρακαλώ ελέγξτε τις πηγές που επηρεάζονται χειροκίνητα.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="805"/>
+        <location filename="../src/mainwindow.cpp" line="812"/>
         <source>About %1</source>
         <translation>Περί του %1</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="806"/>
+        <location filename="../src/mainwindow.cpp" line="813"/>
         <source>Version: </source>
         <translation>Έκδοση: </translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="808"/>
+        <location filename="../src/mainwindow.cpp" line="815"/>
         <source>Program for choosing the default APT repository</source>
         <translation>Πρόγραμμα επιλογής αποθετηρίων</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="810"/>
+        <location filename="../src/mainwindow.cpp" line="817"/>
         <source>Copyright (c) MX Linux</source>
         <translation>Πνευματικά δικαιώματα (c) MX Linux</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="811"/>
+        <location filename="../src/mainwindow.cpp" line="818"/>
         <source>%1 License</source>
         <translation>Άδεια %1</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="825"/>
+        <location filename="../src/mainwindow.cpp" line="832"/>
         <source>%1 Help</source>
         <translation>Βοήθεια %1</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="842"/>
+        <location filename="../src/mainwindow.cpp" line="849"/>
         <source>Warning</source>
         <translation>Προσοχή</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="843"/>
+        <location filename="../src/mainwindow.cpp" line="850"/>
         <source>You have selected MX Test Repo. It&apos;s not recommended to leave it enabled or to upgrade all the packages from it.</source>
         <translation>Έχετε επιλέξει το αποθετήριο Test του MX. Δεν συνιστάται η ενεργοποίηση ή η αναβάθμιση όλων των πακέτων από αυτό.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="846"/>
+        <location filename="../src/mainwindow.cpp" line="853"/>
         <source>A safer option is to install packages individually with MX Package Installer.</source>
         <translation>Η ασφαλέστερη επιλογή είναι, να εγκαταστήσετε μεμονωμένα πακέτα από την εγκατάσταση πακέτων του MX.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="883"/>
+        <location filename="../src/mainwindow.cpp" line="890"/>
         <source>Select the APT repository and sources that you want to use:</source>
         <translation>Επιλέξτε αποθετήριο και τις πηγές που θέλετε να χρησιμοποιήσετε:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="943"/>
+        <location filename="../src/mainwindow.cpp" line="950"/>
         <source>netselect-apt could not detect fastest repo.</source>
         <translation>η εντολή netselect-apt δεν μπόρεσε να ανιχνεύσει ταχύτερο αποθετήριο.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1090"/>
-        <location filename="../src/mainwindow.cpp" line="1151"/>
+        <location filename="../src/mainwindow.cpp" line="1097"/>
+        <location filename="../src/mainwindow.cpp" line="1158"/>
         <source>Could not restore the original APT source files.</source>
         <translation>Δεν έγινε επαναφορά των αρχικών πηγών.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="922"/>
-        <location filename="../src/mainwindow.cpp" line="958"/>
-        <location filename="../src/mainwindow.cpp" line="966"/>
-        <location filename="../src/mainwindow.cpp" line="992"/>
+        <location filename="../src/mainwindow.cpp" line="929"/>
+        <location filename="../src/mainwindow.cpp" line="965"/>
+        <location filename="../src/mainwindow.cpp" line="973"/>
+        <location filename="../src/mainwindow.cpp" line="999"/>
         <source>Could not detect fastest repo.</source>
         <translation>Δεν ανιχνεύτηκε ταχύτερο αποθετήριο.</translation>
     </message>
@@ -286,37 +286,37 @@
         <translation>Ενημέρωση πηγών...</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1005"/>
+        <location filename="../src/mainwindow.cpp" line="1012"/>
         <source>Can&apos;t figure out if this app is running on antiX or MX</source>
         <translation>Δεν μπορώ να καταλάβω αν αυτή η εφαρμογή τρέχει σε antiX ή MX</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1013"/>
+        <location filename="../src/mainwindow.cpp" line="1020"/>
         <source>MX version not detected or out of range: </source>
         <translation>Δεν ανιχνεύεται η έκδοση MX ή είναι εκτός ορίων: </translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1026"/>
+        <location filename="../src/mainwindow.cpp" line="1033"/>
         <source>Could not download original APT files.</source>
         <translation>Δεν ήταν δυνατή η λήψη των αρχικών αρχείων.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1034"/>
+        <location filename="../src/mainwindow.cpp" line="1041"/>
         <source>Could not unzip downloaded file.</source>
         <translation>Δεν μπόρεσε να αποσυμπιεστεί το ληφθέν αρχείο.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1077"/>
+        <location filename="../src/mainwindow.cpp" line="1084"/>
         <source>Enabling AHS</source>
         <translation>Ενεργοποίηση AHS</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1077"/>
+        <location filename="../src/mainwindow.cpp" line="1084"/>
         <source>Do you use AHS (Advanced Hardware Stack) repo?</source>
         <translation>Θέλετε να χρησιμοποιήσετε το αποθετήριο AHS (Advanced Hardware Stack);</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1145"/>
+        <location filename="../src/mainwindow.cpp" line="1152"/>
         <source>Original APT sources have been restored to the release status. User added source files in /etc/apt/sources.list.d/ have not been touched.</source>
         <translation>Τα αποθετήρια επανήλθαν στα αρχική κατάσταση. Τα αρχεία χρήστη στο /etc/apt/sources.list.d/ δεν τροποποιήθηκαν.</translation>
     </message>

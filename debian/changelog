@@ -1,3 +1,26 @@
+mx-repo-manager (26.11) mx; urgency=medium
+
+  * Leave third-party repositories and multiline settings untouched when
+    switching Debian mirrors.
+  * Change only the entry whose checkbox was clicked, and keep both
+    repository lists in sync.
+  * Show sources disabled with "Enabled: false" or "Enabled: 0" as
+    disabled, and keep inline comments when re-enabling a source.
+  * Keep /etc/apt/sources.list listed after all its entries are disabled.
+  * Apply the fastest MX mirror even when the search filter hides it,
+    without applying unrelated checkbox changes.
+  * Keep the current MX mirror if it or the mirror list cannot be read.
+  * Re-enable AHS when restoring MX 25 sources if it was in use.
+  * Name the files that need attention if a restore fails partway.
+  * Make Cancel stop mirror searches, and give up on a Debian mirror that
+    does not respond.
+  * Keep file permissions when saving repository files.
+  * Show an error if updating the package lists fails on exit.
+  * Explain that a graphical session is needed when started without a
+    display.
+
+ -- Adrian <adrian@mxlinux.org>  Thu, 26 Nov 2026 22:29:46 -0500
+
 mx-repo-manager (26.09) mx; urgency=medium
 
   * Select the correct current MX repository when one mirror name contains
